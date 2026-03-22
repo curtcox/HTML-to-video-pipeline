@@ -285,7 +285,7 @@ async function refreshOutputs() {
       warningBox.classList.add('open');
       warningBox.innerHTML = `
         <strong>Sync warning</strong><br>
-        Audio ${report.combined_audio_duration.toFixed(3)}s, raw video ${report.raw_video_duration.toFixed(3)}s, final video ${report.final_video_duration.toFixed(3)}s.<br>
+        Audio ${report.combined_audio_duration.toFixed(3)}s, frame sequence ${report.frame_sequence_duration.toFixed(3)}s, clip plan ${report.clip_plan_duration.toFixed(3)}s, raw video ${report.raw_video_duration.toFixed(3)}s, final video ${report.final_video_duration.toFixed(3)}s.<br>
         ${report.warnings.map(w => w.replace(/</g, '&lt;')).join('<br>')}
       `;
     } else {
