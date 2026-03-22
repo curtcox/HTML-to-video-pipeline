@@ -135,28 +135,80 @@ def build_frame_sequence(
     relationship (multiple paragraphs may map to frames with different
     durations than their audio).
     """
-    # Create a map from segment_index to audio duration
-    audio_duration_map = {}
-    for aseg in audio_segments:
-        audio_duration_map[aseg.segment_index] = aseg.duration
+    audio_map = {seg.segment_index: seg for seg in audio_segments}
+
+    grouped_frames: List[tuple[int, List[VisualFrame]]] = []
+    for frame in visual_frames:
+        if grouped_frames and grouped_frames[-1][0] == frame.segment_index:
+            grouped_frames[-1][1].append(frame)
+        else:
+            grouped_frames.append((frame.segment_index, [frame]))
 
     sequence = []
-    for vf in visual_frames:
-        if vf.duration > 0:
-            # Fixed duration frame (title cards, section cards, diagrams)
-            duration = vf.duration
-        else:
-            # Duration from audio
-            duration = audio_duration_map.get(vf.segment_index, 5.0)
-            # Add pause
-            duration += config.pause_between_paragraphs
+    for segment_index, frames in grouped_frames:
+        audio_seg = audio_map.get(segment_index)
+        target_duration = _target_segment_duration(audio_seg, config, frames)
+        frame_durations = _allocate_group_durations(frames, target_duration)
 
-        sequence.append({
-            "file": os.path.abspath(vf.image_path),
-            "duration": duration,
-        })
+        for frame, duration in zip(frames, frame_durations):
+            sequence.append({
+                "file": os.path.abspath(frame.image_path),
+                "duration": duration,
+            })
 
     return sequence
+
+
+def _target_segment_duration(
+    audio_seg: Optional[AudioSegment],
+    config: PipelineConfig,
+    frames: List[VisualFrame],
+) -> float:
+    """Compute how much screen time this segment should get in total."""
+    if audio_seg is None:
+        explicit = sum(frame.duration for frame in frames if frame.duration > 0)
+        return explicit if explicit > 0 else 5.0
+
+    if audio_seg.segment_type == "heading":
+        pause = config.pause_after_heading
+    elif audio_seg.segment_type in {"paragraph", "blockquote"}:
+        pause = config.pause_between_paragraphs
+    else:
+        pause = 0.0
+
+    return audio_seg.duration + pause
+
+
+def _allocate_group_durations(frames: List[VisualFrame], target_duration: float) -> List[float]:
+    """Distribute a segment's time budget across its frames without global drift."""
+    if not frames:
+        return []
+
+    fixed = [max(frame.duration, 0.0) for frame in frames]
+    fixed_total = sum(duration for duration in fixed if duration > 0)
+    flexible_indexes = [i for i, duration in enumerate(fixed) if duration == 0]
+
+    if flexible_indexes:
+        # Keep most of the time on the narration-matched frame(s).
+        max_fixed_total = target_duration * 0.35
+        allowed_fixed_total = min(fixed_total, max_fixed_total)
+        scale = allowed_fixed_total / fixed_total if fixed_total > 0 else 0.0
+        durations = [
+            duration * scale if duration > 0 else 0.0
+            for duration in fixed
+        ]
+        remaining = max(0.0, target_duration - sum(durations))
+        share = remaining / len(flexible_indexes)
+        for idx in flexible_indexes:
+            durations[idx] = share
+        return durations
+
+    if fixed_total <= 0:
+        share = target_duration / len(frames)
+        return [share for _ in frames]
+
+    scale = target_duration / fixed_total
+    return [duration * scale for duration in fixed]
 
 
 def assemble_video(
@@ -191,13 +243,6 @@ def assemble_video(
 
     print("Step 2: Building frame sequence...")
     frame_sequence = build_frame_sequence(visual_frames, audio_segments, config)
-
-    # Adjust frame durations to match total audio
-    total_frame_duration = sum(f["duration"] for f in frame_sequence)
-    if total_frame_duration > 0:
-        scale = total_audio_duration / total_frame_duration
-        for f in frame_sequence:
-            f["duration"] *= scale
 
     # Create concat file
     concat_path = os.path.join(output_dir, "frames.txt")
