@@ -57,13 +57,7 @@ def concatenate_audio_files(
             _normalize_audio_for_concat(seg.audio_path, normalized_path, sample_rate)
             normalized_segments.append(normalized_path)
 
-            if seg.segment_type == "heading":
-                pause = config.pause_after_heading
-            elif seg.segment_type == "paragraph":
-                pause = config.pause_between_paragraphs
-            else:
-                pause = 0.3
-
+            pause = _pause_after_segment(seg.segment_type, config)
             if pause > 0:
                 silence_path = os.path.join(tmpdir, f"silence_{i:04d}.wav")
                 _generate_silence_wav(pause, silence_path, sample_rate)
@@ -169,14 +163,19 @@ def _target_segment_duration(
         explicit = sum(frame.duration for frame in frames if frame.duration > 0)
         return explicit if explicit > 0 else 5.0
 
-    if audio_seg.segment_type == "heading":
-        pause = config.pause_after_heading
-    elif audio_seg.segment_type in {"paragraph", "blockquote"}:
-        pause = config.pause_between_paragraphs
-    else:
-        pause = 0.0
-
+    pause = _pause_after_segment(audio_seg.segment_type, config)
     return audio_seg.duration + pause
+
+
+def _pause_after_segment(segment_type: str, config: PipelineConfig) -> float:
+    """Use one pause policy for both audio assembly and frame timing."""
+    if segment_type == "heading":
+        return config.pause_after_heading
+    if segment_type in {"paragraph", "blockquote"}:
+        return config.pause_between_paragraphs
+    if segment_type == "title":
+        return 0.3
+    return 0.3
 
 
 def _allocate_group_durations(frames: List[VisualFrame], target_duration: float) -> List[float]:
