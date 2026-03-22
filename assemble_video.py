@@ -17,6 +17,18 @@ from generate_audio import AudioSegment
 from generate_visuals import VisualFrame
 
 
+@dataclass
+class SegmentTiming:
+    """Exact timeline info for one segment in the assembled audio."""
+    segment_index: int
+    audio_duration: float
+    pause_duration: float
+
+    @property
+    def total_duration(self) -> float:
+        return self.audio_duration + self.pause_duration
+
+
 def create_concat_file(
     entries: List[Dict],
     output_path: str,
@@ -40,12 +52,13 @@ def concatenate_audio_files(
     audio_segments: List[AudioSegment],
     config: PipelineConfig,
     output_path: str,
-) -> str:
+) -> Dict[int, SegmentTiming]:
     """
     Concatenate all audio segments into a single audio file,
     with pauses between sections.
     """
     normalized_segments: List[str] = []
+    segment_timings: Dict[int, SegmentTiming] = {}
     sample_rate = 44100
 
     with tempfile.TemporaryDirectory(prefix="audio-concat-", dir=os.path.dirname(output_path)) as tmpdir:
@@ -54,44 +67,59 @@ def concatenate_audio_files(
                 continue
 
             normalized_path = os.path.join(tmpdir, f"segment_{i:04d}.wav")
-            _normalize_audio_for_concat(seg.audio_path, normalized_path, sample_rate)
+            seg.duration = _normalize_audio_for_concat(seg.audio_path, normalized_path, sample_rate)
             normalized_segments.append(normalized_path)
 
             pause = _pause_after_segment(seg.segment_type, config)
             if pause > 0:
                 silence_path = os.path.join(tmpdir, f"silence_{i:04d}.wav")
-                _generate_silence_wav(pause, silence_path, sample_rate)
+                pause = _generate_silence_wav(pause, silence_path, sample_rate)
                 normalized_segments.append(silence_path)
+
+            segment_timings[seg.segment_index] = SegmentTiming(
+                segment_index=seg.segment_index,
+                audio_duration=seg.duration,
+                pause_duration=pause,
+            )
 
         if not normalized_segments:
             raise ValueError("No audio segments found to concatenate.")
 
         _concatenate_wav_files(normalized_segments, output_path)
 
-    return output_path
+    return segment_timings
 
 
-def _normalize_audio_for_concat(input_path: str, output_path: str, sample_rate: int):
-    """Convert an audio clip to mono 16-bit PCM WAV for clean concatenation."""
+def _normalize_audio_for_concat(input_path: str, output_path: str, sample_rate: int) -> float:
+    """Convert an audio clip to trimmed mono PCM WAV and return its duration."""
+    trim_filter = (
+        "silenceremove=start_periods=1:start_silence=0.02:start_threshold=-35dB,"
+        "areverse,"
+        "silenceremove=start_periods=1:start_silence=0.02:start_threshold=-35dB,"
+        "areverse"
+    )
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
         "-ac", "1",
         "-ar", str(sample_rate),
+        "-af", trim_filter,
         "-c:a", "pcm_s16le",
         output_path,
     ]
     subprocess.run(cmd, capture_output=True, check=True)
+    return _probe_audio_duration(output_path)
 
 
-def _generate_silence_wav(duration: float, output_path: str, sample_rate: int):
-    """Generate a silent mono PCM WAV segment."""
+def _generate_silence_wav(duration: float, output_path: str, sample_rate: int) -> float:
+    """Generate a silent mono PCM WAV segment and return its exact duration."""
     frame_count = max(1, int(round(duration * sample_rate)))
     with wave.open(output_path, "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(b"\x00\x00" * frame_count)
+    return frame_count / sample_rate
 
 
 def _concatenate_wav_files(input_paths: List[str], output_path: str):
@@ -117,10 +145,19 @@ def _concatenate_wav_files(input_paths: List[str], output_path: str):
                 out_wav.writeframes(in_wav.readframes(in_wav.getnframes()))
 
 
+def _probe_audio_duration(path: str) -> float:
+    """Read an audio file's duration via ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return float(result.stdout.strip())
+
+
 def build_frame_sequence(
     visual_frames: List[VisualFrame],
-    audio_segments: List[AudioSegment],
-    config: PipelineConfig,
+    segment_timings: Dict[int, SegmentTiming],
 ) -> List[Dict]:
     """
     Build the sequence of (image, duration) pairs for the video.
@@ -129,8 +166,6 @@ def build_frame_sequence(
     relationship (multiple paragraphs may map to frames with different
     durations than their audio).
     """
-    audio_map = {seg.segment_index: seg for seg in audio_segments}
-
     grouped_frames: List[tuple[int, List[VisualFrame]]] = []
     for frame in visual_frames:
         if grouped_frames and grouped_frames[-1][0] == frame.segment_index:
@@ -140,8 +175,8 @@ def build_frame_sequence(
 
     sequence = []
     for segment_index, frames in grouped_frames:
-        audio_seg = audio_map.get(segment_index)
-        target_duration = _target_segment_duration(audio_seg, config, frames)
+        timing = segment_timings.get(segment_index)
+        target_duration = _target_segment_duration(timing, frames)
         frame_durations = _allocate_group_durations(frames, target_duration)
 
         for frame, duration in zip(frames, frame_durations):
@@ -154,17 +189,15 @@ def build_frame_sequence(
 
 
 def _target_segment_duration(
-    audio_seg: Optional[AudioSegment],
-    config: PipelineConfig,
+    timing: Optional[SegmentTiming],
     frames: List[VisualFrame],
 ) -> float:
     """Compute how much screen time this segment should get in total."""
-    if audio_seg is None:
+    if timing is None:
         explicit = sum(frame.duration for frame in frames if frame.duration > 0)
         return explicit if explicit > 0 else 5.0
 
-    pause = _pause_after_segment(audio_seg.segment_type, config)
-    return audio_seg.duration + pause
+    return timing.total_duration
 
 
 def _pause_after_segment(segment_type: str, config: PipelineConfig) -> float:
@@ -229,19 +262,14 @@ def assemble_video(
 
     print("Step 1: Concatenating audio...")
     combined_audio = os.path.join(output_dir, "combined_audio.wav")
-    concatenate_audio_files(audio_segments, config, combined_audio)
+    segment_timings = concatenate_audio_files(audio_segments, config, combined_audio)
 
     # Get total audio duration
-    probe_cmd = [
-        "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", combined_audio,
-    ]
-    result = subprocess.run(probe_cmd, capture_output=True, text=True)
-    total_audio_duration = float(result.stdout.strip())
+    total_audio_duration = _probe_audio_duration(combined_audio)
     print(f"  Total audio: {total_audio_duration:.1f}s")
 
     print("Step 2: Building frame sequence...")
-    frame_sequence = build_frame_sequence(visual_frames, audio_segments, config)
+    frame_sequence = build_frame_sequence(visual_frames, segment_timings)
 
     # Create concat file
     concat_path = os.path.join(output_dir, "frames.txt")
