@@ -52,10 +52,25 @@ HTML = r"""<!DOCTYPE html>
   .log .info { color: var(--accent); }
   .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; cursor: pointer; padding: 2rem; }
   .lightbox.open { display: flex; }
-  .lightbox-panel { max-width: min(1100px, 95vw); max-height: 95vh; display: flex; flex-direction: column; gap: 1rem; cursor: default; }
+  .lightbox-panel { position: relative; max-width: min(1100px, 95vw); max-height: 95vh; display: flex; flex-direction: column; gap: 1rem; cursor: default; }
   .lightbox img { max-width: 95vw; max-height: calc(95vh - 120px); border-radius: 4px; }
   .lightbox-audio { width: min(720px, 95vw); align-self: center; }
   .lightbox-meta { text-align: center; color: var(--accent); font-size: 0.9rem; min-height: 1.2rem; }
+  .lightbox-close {
+    position: absolute;
+    top: -0.5rem;
+    right: -0.5rem;
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    background: var(--surface);
+    color: var(--heading);
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .lightbox-close:hover { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
@@ -144,6 +159,7 @@ HTML = r"""<!DOCTYPE html>
 
 <div class="lightbox" id="lightbox" onclick="closeLightbox()">
   <div class="lightbox-panel" onclick="event.stopPropagation()">
+    <button class="lightbox-close" type="button" onclick="closeLightbox()" aria-label="Close preview">×</button>
     <img id="lightbox-img">
     <audio id="lightbox-audio" class="lightbox-audio" controls style="display:none"></audio>
     <div id="lightbox-meta" class="lightbox-meta"></div>
@@ -182,6 +198,10 @@ function closeLightbox() {
   audio.load();
   document.getElementById('lightbox').classList.remove('open');
 }
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeLightbox();
+});
 
 function findMatchingAudio(frameName) {
   const match = frameName.match(/_(\d+)\.png$/);
