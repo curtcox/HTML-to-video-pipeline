@@ -50,9 +50,12 @@ HTML = r"""<!DOCTYPE html>
   .log .ok { color: var(--success); }
   .log .err { color: var(--error); }
   .log .info { color: var(--accent); }
-  .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; cursor: pointer; }
+  .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; cursor: pointer; padding: 2rem; }
   .lightbox.open { display: flex; }
-  .lightbox img { max-width: 95vw; max-height: 95vh; border-radius: 4px; }
+  .lightbox-panel { max-width: min(1100px, 95vw); max-height: 95vh; display: flex; flex-direction: column; gap: 1rem; cursor: default; }
+  .lightbox img { max-width: 95vw; max-height: calc(95vh - 120px); border-radius: 4px; }
+  .lightbox-audio { width: min(720px, 95vw); align-self: center; }
+  .lightbox-meta { text-align: center; color: var(--accent); font-size: 0.9rem; min-height: 1.2rem; }
 </style>
 </head>
 <body>
@@ -139,12 +142,17 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </main>
 
-<div class="lightbox" id="lightbox" onclick="this.classList.remove('open')">
-  <img id="lightbox-img">
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <div class="lightbox-panel" onclick="event.stopPropagation()">
+    <img id="lightbox-img">
+    <audio id="lightbox-audio" class="lightbox-audio" controls style="display:none"></audio>
+    <div id="lightbox-meta" class="lightbox-meta"></div>
+  </div>
 </div>
 
 <script>
 const log = document.getElementById('log');
+let audioNames = [];
 function addLog(msg, cls = 'info') {
   const ts = new Date().toLocaleTimeString();
   log.innerHTML += `<span class="${cls}">[${ts}] ${msg}</span>\n`;
@@ -165,6 +173,47 @@ function setStageStatus(stage, text, state) {
   const btn = document.querySelector(`[data-stage="${stage}"]`);
   document.getElementById(`status-${stage}`).textContent = text;
   btn.className = 'stage-btn' + (state ? ` ${state}` : '');
+}
+
+function closeLightbox() {
+  const audio = document.getElementById('lightbox-audio');
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
+  document.getElementById('lightbox').classList.remove('open');
+}
+
+function findMatchingAudio(frameName) {
+  const match = frameName.match(/_(\d+)\.png$/);
+  if (!match) return null;
+  const index = match[1];
+  return audioNames.find(name => name === `audio_${index}.wav`) ||
+         audioNames.find(name => name === `audio_${index}.mp3`) ||
+         null;
+}
+
+function openFramePreview(imageSrc, frameName) {
+  const lightbox = document.getElementById('lightbox');
+  const img = document.getElementById('lightbox-img');
+  const audio = document.getElementById('lightbox-audio');
+  const meta = document.getElementById('lightbox-meta');
+  img.src = imageSrc;
+  img.alt = frameName;
+
+  const audioName = findMatchingAudio(frameName);
+  if (audioName) {
+    audio.src = `/api/outputs/audio?name=${encodeURIComponent(audioName)}`;
+    audio.style.display = '';
+    meta.textContent = `${frameName} with ${audioName}`;
+  } else {
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+    audio.style.display = 'none';
+    meta.textContent = `${frameName} (no matching audio clip)`;
+  }
+
+  lightbox.classList.add('open');
 }
 
 async function runStage(stage) {
@@ -205,6 +254,7 @@ async function runAll() {
 async function refreshOutputs() {
   try {
     const data = await api('GET', '/api/outputs');
+    audioNames = (data.audio || []).map(a => a.name);
     document.getElementById('count-frames').textContent = data.frames ? data.frames.length : 0;
     const gallery = document.getElementById('gallery-frames');
     gallery.innerHTML = '';
@@ -214,7 +264,7 @@ async function refreshOutputs() {
         const img = document.createElement('img');
         img.src = `data:image/png;base64,${imgData.data}`;
         img.title = frame.name;
-        img.onclick = (e) => { e.stopPropagation(); document.getElementById('lightbox-img').src = img.src; document.getElementById('lightbox').classList.add('open'); };
+        img.onclick = (e) => { e.stopPropagation(); openFramePreview(img.src, frame.name); };
         gallery.appendChild(img);
       }
     }
@@ -228,7 +278,17 @@ async function refreshOutputs() {
         img.src = `data:image/png;base64,${imgData.data}`;
         img.title = qr.name;
         img.style.maxWidth = '120px';
-        img.onclick = (e) => { e.stopPropagation(); document.getElementById('lightbox-img').src = img.src; document.getElementById('lightbox').classList.add('open'); };
+        img.onclick = (e) => {
+          e.stopPropagation();
+          document.getElementById('lightbox-img').src = img.src;
+          document.getElementById('lightbox-img').alt = qr.name;
+          document.getElementById('lightbox-audio').pause();
+          document.getElementById('lightbox-audio').removeAttribute('src');
+          document.getElementById('lightbox-audio').load();
+          document.getElementById('lightbox-audio').style.display = 'none';
+          document.getElementById('lightbox-meta').textContent = qr.name;
+          document.getElementById('lightbox').classList.add('open');
+        };
         qrGallery.appendChild(img);
       }
     }

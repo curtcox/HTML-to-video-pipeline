@@ -1,11 +1,32 @@
 #!/usr/bin/env python3
-"""List audio files."""
+"""List audio files or serve an individual audio file."""
 import json
 import os
 import sys
+import urllib.parse
 
 root = os.environ["PIPELINE_ROOT"]
 audio_dir = os.path.join(root, "output", "audio")
+query = urllib.parse.parse_qs(os.environ.get("QUERY_STRING", ""))
+name = query.get("name", [""])[0]
+
+if name:
+    safe_name = os.path.basename(name)
+    audio_path = os.path.join(audio_dir, safe_name)
+    if not os.path.isfile(audio_path):
+        sys.stdout.write("Status: 404\n\n")
+        sys.stdout.write(json.dumps({"error": "audio not found"}))
+        raise SystemExit(0)
+
+    ext = os.path.splitext(safe_name)[1].lower()
+    content_type = "audio/wav" if ext == ".wav" else "audio/mpeg"
+    data = open(audio_path, "rb").read()
+    sys.stdout.buffer.write(f"Content-Type: {content_type}\n".encode())
+    sys.stdout.buffer.write(f"Content-Length: {len(data)}\n".encode())
+    sys.stdout.buffer.write(f"Content-Disposition: inline; filename={safe_name}\n".encode())
+    sys.stdout.buffer.write(b"\n")
+    sys.stdout.buffer.write(data)
+    raise SystemExit(0)
 
 audio_files = []
 if os.path.isdir(audio_dir):
