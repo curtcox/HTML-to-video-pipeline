@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Run the final video assembly stage."""
+import json
+import os
+import sys
+
+root = os.environ["PIPELINE_ROOT"]
+output_dir = os.path.join(root, "output")
+segments_path = os.path.join(output_dir, "segments.json")
+audio_meta_path = os.path.join(output_dir, "audio", "audio_metadata.json")
+srt_path = os.path.join(output_dir, "captions.srt")
+frames_dir = os.path.join(output_dir, "frames")
+
+for name, path in [("segments.json", segments_path), ("audio metadata", audio_meta_path),
+                    ("captions.srt", srt_path), ("frames", frames_dir)]:
+    if not os.path.exists(path):
+        sys.stdout.write("Status: 400\n\n")
+        sys.stdout.write(json.dumps({"error": f"Missing {name}. Run earlier stages first."}))
+        raise SystemExit(0)
+
+_real_stdout = sys.stdout
+sys.stdout = sys.stderr
+
+try:
+    from config import PipelineConfig
+    from assemble_video import assemble_video
+    from generate_audio import AudioSegment
+    from generate_visuals import VisualFrame
+
+    # Load audio metadata
+    with open(audio_meta_path) as f:
+        audio_data = json.load(f)
+    audio_segments = [AudioSegment(**a) for a in audio_data]
+
+    # Build visual frame list from frames directory
+    frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
+    visual_frames = [
+        VisualFrame(
+            image_path=os.path.join(frames_dir, f),
+            duration=0.0,
+            segment_index=i,
+        )
+        for i, f in enumerate(frame_files)
+    ]
+
+    config = PipelineConfig(output_dir=output_dir)
+    video_path = assemble_video(visual_frames, audio_segments, srt_path, config, output_dir)
+    body = json.dumps({"status": "ok", "video_path": video_path})
+except Exception as e:
+    import traceback
+    sys.stdout = _real_stdout
+    sys.stdout.write("Status: 500\n\n")
+    sys.stdout.write(json.dumps({"error": str(e), "traceback": traceback.format_exc()}))
+    raise SystemExit(0)
+
+sys.stdout = _real_stdout
+sys.stdout.write("\n")
+sys.stdout.write(body)

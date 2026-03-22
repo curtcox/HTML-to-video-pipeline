@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""List audio files."""
+import json
+import os
+import sys
+
+root = os.environ["PIPELINE_ROOT"]
+audio_dir = os.path.join(root, "output", "audio")
+
+audio_files = []
+if os.path.isdir(audio_dir):
+    for f in sorted(os.listdir(audio_dir)):
+        if f.endswith((".mp3", ".wav")):
+            audio_files.append({"name": f, "size": os.path.getsize(os.path.join(audio_dir, f))})
+
+sys.stdout.write("\n")
+sys.stdout.write(json.dumps({"audio": audio_files}))

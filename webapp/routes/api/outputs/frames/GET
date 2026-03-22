@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""List frames or serve a specific frame (via ?name=...)."""
+import base64
+import json
+import os
+import sys
+
+root = os.environ["PIPELINE_ROOT"]
+frames_dir = os.path.join(root, "output", "frames")
+name = os.environ.get("QUERY_NAME", "")
+
+if name:
+    safe_name = os.path.basename(name)
+    path = os.path.join(frames_dir, safe_name)
+    if not os.path.isfile(path):
+        sys.stdout.write("Status: 404\n\n")
+        sys.stdout.write(json.dumps({"error": "frame not found"}))
+        raise SystemExit(0)
+    with open(path, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    sys.stdout.write("\n")
+    sys.stdout.write(json.dumps({"name": safe_name, "data": data, "mime": "image/png"}))
+else:
+    frames = []
+    if os.path.isdir(frames_dir):
+        for f in sorted(os.listdir(frames_dir)):
+            if f.endswith(".png"):
+                frames.append({"name": f, "size": os.path.getsize(os.path.join(frames_dir, f))})
+    sys.stdout.write("\n")
+    sys.stdout.write(json.dumps({"frames": frames}))

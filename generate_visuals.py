@@ -23,17 +23,29 @@ class VisualFrame:
 
 
 def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Load a font at the given size."""
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
-        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    for path in font_paths:
+    """Load a font at the given size. Works on Linux and macOS."""
+    if bold:
+        candidates = [
+            # Linux (DejaVu)
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            # macOS system fonts
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/Library/Fonts/Arial Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/Library/Fonts/Arial.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ]
+    for path in candidates:
         try:
             return ImageFont.truetype(path, size)
-        except IOError:
+        except (IOError, OSError):
             continue
+    # Last resort: Pillow's built-in default (tiny bitmap)
     return ImageFont.load_default()
 
 
@@ -53,33 +65,48 @@ def create_title_card(
     img = Image.new("RGB", (config.video_width, config.video_height),
                      hex_to_rgb(config.background_color))
     draw = ImageDraw.Draw(img)
+    W, H = config.video_width, config.video_height
 
-    # Title
+    # Title — measure first, then center vertically
     font_title = get_font(config.font_size_title, bold=True)
-    wrapped = textwrap.wrap(title, width=28)
-    y = config.video_height // 3
+    max_chars = (W - config.margin * 2) // int(config.font_size_title * 0.58)
+    wrapped = textwrap.wrap(title, width=max_chars)
+    line_heights = []
     for line in wrapped:
         bbox = draw.textbbox((0, 0), line, font=font_title)
+        line_heights.append(bbox[3] - bbox[1])
+    title_block_h = sum(line_heights) + 24 * (len(wrapped) - 1)
+
+    # Subtitle height
+    font_sub = get_font(config.font_size_body)
+    sub_h = 0
+    if subtitle:
+        bbox = draw.textbbox((0, 0), subtitle, font=font_sub)
+        sub_h = bbox[3] - bbox[1] + 50  # gap above subtitle
+
+    total_block = title_block_h + sub_h
+    y = (H - total_block) // 2
+
+    # Decorative line above title
+    line_width = 300
+    line_x = (W - line_width) // 2
+    draw.line([(line_x, y - 30), (line_x + line_width, y - 30)],
+              fill=hex_to_rgb(config.accent_color), width=4)
+
+    for i, line in enumerate(wrapped):
+        bbox = draw.textbbox((0, 0), line, font=font_title)
         text_width = bbox[2] - bbox[0]
-        x = (config.video_width - text_width) // 2
+        x = (W - text_width) // 2
         draw.text((x, y), line, fill=hex_to_rgb(config.heading_color), font=font_title)
-        y += bbox[3] - bbox[1] + 20
+        y += line_heights[i] + 24
 
     # Subtitle / byline
     if subtitle:
-        y += 40
-        font_sub = get_font(config.font_size_body)
+        y += 26
         bbox = draw.textbbox((0, 0), subtitle, font=font_sub)
         text_width = bbox[2] - bbox[0]
-        x = (config.video_width - text_width) // 2
+        x = (W - text_width) // 2
         draw.text((x, y), subtitle, fill=hex_to_rgb(config.accent_color), font=font_sub)
-
-    # Decorative line
-    line_y = config.video_height // 3 - 30
-    line_width = 200
-    line_x = (config.video_width - line_width) // 2
-    draw.line([(line_x, line_y), (line_x + line_width, line_y)],
-              fill=hex_to_rgb(config.accent_color), width=3)
 
     img.save(output_path)
     return output_path
@@ -96,32 +123,46 @@ def create_section_card(
     img = Image.new("RGB", (config.video_width, config.video_height),
                      hex_to_rgb(config.background_color))
     draw = ImageDraw.Draw(img)
+    W, H = config.video_width, config.video_height
 
-    # Section number
-    font_num = get_font(config.font_size_body)
+    # Measure everything to center the block vertically
+    font_num = get_font(config.font_size_section_label)
     num_text = f"Section {section_number + 1} of {total_sections}"
-    bbox = draw.textbbox((0, 0), num_text, font=font_num)
-    text_width = bbox[2] - bbox[0]
-    x = (config.video_width - text_width) // 2
-    y = config.video_height // 3 - 40
-    draw.text((x, y), num_text, fill=hex_to_rgb(config.accent_color), font=font_num)
+    num_bbox = draw.textbbox((0, 0), num_text, font=font_num)
+    num_h = num_bbox[3] - num_bbox[1]
 
-    # Section title
     font_title = get_font(config.font_size_heading, bold=True)
-    wrapped = textwrap.wrap(section_title, width=35)
-    y = config.video_height // 3 + 30
+    max_chars = (W - config.margin * 2) // int(config.font_size_heading * 0.55)
+    wrapped = textwrap.wrap(section_title, width=max_chars)
+    title_line_h = []
     for line in wrapped:
         bbox = draw.textbbox((0, 0), line, font=font_title)
-        text_width = bbox[2] - bbox[0]
-        x = (config.video_width - text_width) // 2
-        draw.text((x, y), line, fill=hex_to_rgb(config.heading_color), font=font_title)
-        y += bbox[3] - bbox[1] + 15
+        title_line_h.append(bbox[3] - bbox[1])
+    title_block_h = sum(title_line_h) + 16 * (len(wrapped) - 1)
 
-    # Decorative accent
-    accent_y = config.video_height // 3 + 10
-    draw.line([(config.margin * 2, accent_y),
-               (config.video_width - config.margin * 2, accent_y)],
-              fill=hex_to_rgb(config.accent_color), width=2)
+    gap = 40  # between number and accent line + title
+    total_block = num_h + gap + title_block_h
+    y = (H - total_block) // 2
+
+    # Section number
+    num_w = num_bbox[2] - num_bbox[0]
+    draw.text(((W - num_w) // 2, y), num_text,
+              fill=hex_to_rgb(config.accent_color), font=font_num)
+    y += num_h + 16
+
+    # Accent line
+    line_w = W - config.margin * 2
+    draw.line([(config.margin, y), (config.margin + line_w, y)],
+              fill=hex_to_rgb(config.accent_color), width=3)
+    y += 24
+
+    # Section title
+    for i, line in enumerate(wrapped):
+        bbox = draw.textbbox((0, 0), line, font=font_title)
+        text_width = bbox[2] - bbox[0]
+        x = (W - text_width) // 2
+        draw.text((x, y), line, fill=hex_to_rgb(config.heading_color), font=font_title)
+        y += title_line_h[i] + 16
 
     img.save(output_path)
     return output_path
@@ -146,14 +187,15 @@ def create_text_frame(
     draw = ImageDraw.Draw(img)
 
     # Section title at top
-    font_section = get_font(24)
-    draw.text((config.margin, 40), section_title.upper(),
+    font_section = get_font(config.font_size_section_label)
+    draw.text((config.margin, 30), section_title.upper(),
               fill=hex_to_rgb(config.accent_color), font=font_section)
 
     # Thin separator line
-    draw.line([(config.margin, 75),
-               (config.video_width - config.margin, 75)],
-              fill=hex_to_rgb(config.accent_color), width=1)
+    sep_y = 30 + config.font_size_section_label + 12
+    draw.line([(config.margin, sep_y),
+               (config.video_width - config.margin, sep_y)],
+              fill=hex_to_rgb(config.accent_color), width=2)
 
     # Main text area - fit text to available space
     text_area_width = config.video_width - (config.margin * 2)
@@ -162,8 +204,8 @@ def create_text_frame(
         qr_reserved = config.qr_size + config.qr_margin * 2
         text_area_width -= qr_reserved
 
-    # Available vertical space: below header (y=100) to above QR/bottom margin
-    y_top = 100
+    # Available vertical space: below header to above bottom margin
+    y_top = sep_y + 20
     y_bottom = config.video_height - config.margin
     if qr_image_path:
         # Leave room for QR label + code at bottom-right; text can still
@@ -218,8 +260,8 @@ def create_text_frame(
         img.paste(qr_img, (qr_x, qr_y), qr_img if qr_img.mode == "RGBA" else None)
 
         # Label above QR
-        font_qr_label = get_font(18)
-        draw.text((qr_x - bg_padding, qr_y - 25), "Scan for source",
+        font_qr_label = get_font(24)
+        draw.text((qr_x - bg_padding, qr_y - 32), "Scan for source",
                   fill=hex_to_rgb(config.accent_color), font=font_qr_label)
 
     img.save(output_path)
@@ -304,85 +346,100 @@ def create_diagram_frame(
     text_c = hex_to_rgb(config.text_color)
     heading_c = hex_to_rgb(config.heading_color)
 
+    W, H = config.video_width, config.video_height
+    M = config.margin
+
     # Title
     if title:
-        font_title = get_font(40, bold=True)
+        font_title = get_font(56, bold=True)
         bbox = draw.textbbox((0, 0), title, font=font_title)
-        x = (config.video_width - (bbox[2] - bbox[0])) // 2
+        x = (W - (bbox[2] - bbox[0])) // 2
         draw.text((x, 50), title, fill=heading_c, font=font_title)
 
-    font_label = get_font(28)
-    font_small = get_font(22)
+    content_top = 140  # below title
+    content_bottom = H - M
+    content_height = content_bottom - content_top
+
+    font_label = get_font(36)
+    font_small = get_font(30)
 
     if diagram_type == "flow":
-        # Horizontal flow diagram with arrows
+        # Horizontal flow diagram with arrows — fill the width
         n = len(labels)
-        box_width = min(300, (config.video_width - config.margin * 2 - 60 * (n - 1)) // n)
-        box_height = 80
-        total_width = n * box_width + (n - 1) * 60
-        start_x = (config.video_width - total_width) // 2
-        y = config.video_height // 2 - box_height // 2
+        arrow_gap = 70
+        usable_w = W - M * 2 - arrow_gap * (n - 1)
+        box_width = usable_w // n
+        box_height = min(160, content_height // 2)
+        total_width = n * box_width + (n - 1) * arrow_gap
+        start_x = (W - total_width) // 2
+        y = content_top + (content_height - box_height) // 2
 
         for i, label in enumerate(labels):
-            x = start_x + i * (box_width + 60)
+            x = start_x + i * (box_width + arrow_gap)
             # Box
             draw.rounded_rectangle(
                 [(x, y), (x + box_width, y + box_height)],
-                radius=10, outline=accent, width=2
+                radius=14, outline=accent, width=3
             )
             # Label (centered)
-            wrapped = textwrap.wrap(label, width=box_width // 16)
-            label_y = y + (box_height - len(wrapped) * 30) // 2
+            wrapped = textwrap.wrap(label, width=box_width // 18)
+            line_h = 38
+            label_y = y + (box_height - len(wrapped) * line_h) // 2
             for line in wrapped:
                 bbox = draw.textbbox((0, 0), line, font=font_small)
                 lx = x + (box_width - (bbox[2] - bbox[0])) // 2
                 draw.text((lx, label_y), line, fill=text_c, font=font_small)
-                label_y += 30
+                label_y += line_h
 
             # Arrow to next box
             if i < n - 1:
-                arrow_x = x + box_width + 5
+                arrow_x = x + box_width + 8
+                arrow_end = arrow_x + arrow_gap - 16
                 arrow_y = y + box_height // 2
-                draw.line([(arrow_x, arrow_y), (arrow_x + 50, arrow_y)],
-                          fill=accent, width=2)
+                draw.line([(arrow_x, arrow_y), (arrow_end, arrow_y)],
+                          fill=accent, width=3)
                 # Arrowhead
-                draw.polygon([(arrow_x + 50, arrow_y),
-                              (arrow_x + 42, arrow_y - 6),
-                              (arrow_x + 42, arrow_y + 6)],
+                draw.polygon([(arrow_end, arrow_y),
+                              (arrow_end - 12, arrow_y - 9),
+                              (arrow_end - 12, arrow_y + 9)],
                              fill=accent)
 
     elif diagram_type == "comparison":
-        # Side-by-side comparison bars
-        bar_max_width = config.video_width // 2 - config.margin - 40
-        y = 150
+        # Horizontal comparison bars — spread to fill vertical space
+        n = len(labels)
+        row_height = min(content_height // n, 180)
+        total_h = row_height * n
+        y_start = content_top + (content_height - total_h) // 2
+        bar_max_width = W - M * 2 - 200  # leave room for value label
+
         for i, label in enumerate(labels):
             parts = label.split("|") if "|" in label else [label, ""]
             name = parts[0].strip()
             value_str = parts[1].strip() if len(parts) > 1 else ""
 
-            # Try to extract numeric value for bar width
             try:
                 value = float(value_str.replace("%", ""))
                 bar_width = int(bar_max_width * value / 100)
             except (ValueError, ZeroDivisionError):
                 bar_width = bar_max_width // 2
 
-            draw.text((config.margin, y), name, fill=text_c, font=font_label)
-            y += 40
+            y = y_start + i * row_height
+            draw.text((M, y), name, fill=text_c, font=font_label)
+            bar_y = y + 48
+            bar_h = max(row_height - 70, 40)
             draw.rounded_rectangle(
-                [(config.margin, y), (config.margin + bar_width, y + 35)],
-                radius=5, fill=accent
+                [(M, bar_y), (M + bar_width, bar_y + bar_h)],
+                radius=8, fill=accent
             )
             if value_str:
-                draw.text((config.margin + bar_width + 15, y + 3),
+                draw.text((M + bar_width + 20, bar_y + (bar_h - 36) // 2),
                           value_str, fill=heading_c, font=font_label)
-            y += 60
 
     elif diagram_type == "stats":
-        # Big number stats display
+        # Big number stats — fill the frame
         n = len(labels)
-        col_width = (config.video_width - config.margin * 2) // min(n, 3)
-        y_base = config.video_height // 3
+        col_width = (W - M * 2) // min(n, 3)
+        y_center = content_top + content_height // 2
 
         for i, label in enumerate(labels):
             parts = label.split("|") if "|" in label else [label, ""]
@@ -391,24 +448,24 @@ def create_diagram_frame(
 
             col = i % 3
             row = i // 3
-            x = config.margin + col * col_width + col_width // 2
-            y = y_base + row * 200
+            x = M + col * col_width + col_width // 2
+            y = y_center - 80 + row * 260
 
             # Big number
-            font_big = get_font(64, bold=True)
+            font_big = get_font(96, bold=True)
             bbox = draw.textbbox((0, 0), number, font=font_big)
             nx = x - (bbox[2] - bbox[0]) // 2
             draw.text((nx, y), number, fill=accent, font=font_big)
 
             # Description
             if desc:
-                wrapped = textwrap.wrap(desc, width=20)
-                dy = y + 80
+                wrapped = textwrap.wrap(desc, width=18)
+                dy = y + 110
                 for line in wrapped:
                     bbox = draw.textbbox((0, 0), line, font=font_small)
                     lx = x - (bbox[2] - bbox[0]) // 2
                     draw.text((lx, dy), line, fill=text_c, font=font_small)
-                    dy += 28
+                    dy += 38
 
     img.save(output_path)
     return output_path
@@ -422,10 +479,10 @@ SECTION_DIAGRAMS = {
         ["Training Data\n(patterns)", "Statistical\nPrediction", "Next Word\nGeneration", "Output Text\n(may be false)"],
         "How LLMs Generate Text"
     ),
-    "The psychology: citations boost trust whether or not they're valid": (
+    "The psychology: citations boost trust whether or not they\u2019re valid": (
         "stats",
-        ["↑ Trust|Citations present\n(even random ones)",
-         "↓ Trust|Only when users\nactually click & read",
+        ["HIGH|Trust increases when\ncitations present (even random)",
+         "LOW|Trust only when users\nactually click & read",
          "Gap|Between confidence\nand accuracy"],
         "How Citations Affect User Trust"
     ),
@@ -434,7 +491,7 @@ SECTION_DIAGRAMS = {
         ["LLM generates\nmultiple responses", "Human raters\nrank them", "Reward model\nlearns preferences", "LLM optimized\nfor high scores"],
         "The RLHF Training Loop"
     ),
-    "The solutions exist — they're just not widely deployed": (
+    "The solutions exist \u2014 they\u2019re just not widely deployed": (
         "comparison",
         ["GopherCite (2022) | 80|80% accurate cited answers",
          "Fine-grained NLI rewards | 90|Outperformed standard RLHF",
@@ -442,7 +499,7 @@ SECTION_DIAGRAMS = {
          "CiteAudit / CiteLab | 75|Post-hoc audit tools"],
         "Existing Citation Verification Approaches"
     ),
-    "What will probably get better — and what probably won't": (
+    "What will probably get better \u2014 and what probably won\u2019t": (
         "comparison",
         ["GPT-3.5 fabrication rate | 39.6|39.6%",
          "GPT-4 fabrication rate | 28.6|28.6%",
@@ -466,7 +523,7 @@ def generate_frames_for_segments(
     """
     os.makedirs(output_dir, exist_ok=True)
     frames: List[VisualFrame] = []
-    total_sections = max(s.section_index for s in segments) + 1
+    total_sections = sum(1 for s in segments if s.segment_type == "heading")
     seen_sections = set()
 
     for i, seg in enumerate(segments):

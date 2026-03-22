@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Run the caption/SRT generation stage."""
+import json
+import os
+import sys
+
+root = os.environ["PIPELINE_ROOT"]
+output_dir = os.path.join(root, "output")
+audio_meta_path = os.path.join(output_dir, "audio", "audio_metadata.json")
+
+if not os.path.exists(audio_meta_path):
+    sys.stdout.write("Status: 400\n\n")
+    sys.stdout.write(json.dumps({"error": "No audio metadata found. Run audio stage first."}))
+    raise SystemExit(0)
+
+_real_stdout = sys.stdout
+sys.stdout = sys.stderr
+
+try:
+    from config import PipelineConfig
+    from generate_audio import AudioSegment
+    from generate_captions import generate_srt
+
+    # Load audio segments (generate_srt expects AudioSegment objects, not Segment)
+    with open(audio_meta_path) as f:
+        audio_data = json.load(f)
+    audio_segments = [AudioSegment(**a) for a in audio_data]
+
+    config = PipelineConfig(output_dir=output_dir)
+    srt_path = os.path.join(output_dir, "captions.srt")
+
+    # Signature: (audio_segments, config, output_path)
+    generate_srt(audio_segments, config, srt_path)
+    body = json.dumps({"status": "ok", "srt_path": srt_path})
+except Exception as e:
+    import traceback
+    sys.stdout = _real_stdout
+    sys.stdout.write("Status: 500\n\n")
+    sys.stdout.write(json.dumps({"error": str(e), "traceback": traceback.format_exc()}))
+    raise SystemExit(0)
+
+sys.stdout = _real_stdout
+sys.stdout.write("\n")
+sys.stdout.write(body)

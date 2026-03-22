@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Serve the pipeline web UI."""
+import sys
+
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTML-to-Video Pipeline</title>
+<style>
+  :root { --bg: #1a1a2e; --surface: #16213e; --border: #0f3460; --accent: #4fc3f7; --text: #e0e0e0; --heading: #fff; --success: #66bb6a; --error: #ef5350; --warn: #ffa726; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+  header h1 { color: var(--heading); font-size: 1.4rem; font-weight: 600; }
+  header .pill { background: var(--accent); color: var(--bg); font-size: 0.75rem; padding: 2px 8px; border-radius: 9999px; font-weight: 600; }
+  main { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+  .stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 2rem; }
+  .stage-btn {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    padding: 1rem; border-radius: 8px; cursor: pointer; text-align: center;
+    transition: all 0.15s; font-size: 0.9rem;
+  }
+  .stage-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .stage-btn.running { border-color: var(--warn); color: var(--warn); opacity: 0.7; pointer-events: none; }
+  .stage-btn.done { border-color: var(--success); }
+  .stage-btn .icon { font-size: 1.5rem; display: block; margin-bottom: 0.4rem; }
+  .stage-btn .label { font-weight: 600; }
+  .stage-btn .status { font-size: 0.75rem; margin-top: 0.3rem; color: var(--accent); min-height: 1em; }
+  .config-bar { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 2rem; display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; }
+  .config-bar label { font-size: 0.8rem; color: var(--accent); display: block; margin-bottom: 0.25rem; }
+  .config-bar input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.85rem; width: 320px; }
+  .config-bar input:focus, .config-bar select:focus { outline: none; border-color: var(--accent); }
+  .config-bar select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }
+  .actions { display: flex; gap: 0.5rem; margin-bottom: 2rem; }
+  .btn { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: all 0.15s; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.danger { border-color: var(--error); color: var(--error); }
+  .btn.danger:hover { background: var(--error); color: white; }
+  .output-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1.5rem; }
+  .output-header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  .output-header h3 { color: var(--heading); font-size: 1rem; }
+  .output-header .count { color: var(--accent); font-size: 0.85rem; }
+  .output-body { padding: 1rem; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.75rem; }
+  .gallery img { width: 100%; border-radius: 4px; cursor: pointer; border: 1px solid var(--border); transition: border-color 0.15s; }
+  .gallery img:hover { border-color: var(--accent); }
+  .log { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.75rem; font-family: monospace; font-size: 0.8rem; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+  .log .ok { color: var(--success); }
+  .log .err { color: var(--error); }
+  .log .info { color: var(--accent); }
+  .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; cursor: pointer; }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 95vw; max-height: 95vh; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>HTML-to-Video Pipeline</h1>
+  <span class="pill">fsrouter</span>
+</header>
+
+<main>
+  <div class="config-bar">
+    <div>
+      <label for="url-input">Article URL or path</label>
+      <input type="text" id="url-input" placeholder="https://... or /path/to/article.html">
+    </div>
+    <div>
+      <label for="tts-provider">TTS Provider</label>
+      <select id="tts-provider">
+        <option value="say" selected>say (macOS built-in)</option>
+        <option value="piper">Piper (local neural)</option>
+        <option value="kokoro">Kokoro (local 82M)</option>
+        <option value="elevenlabs">ElevenLabs (cloud)</option>
+      </select>
+    </div>
+    <button class="btn" onclick="runAll()">Run All Stages</button>
+  </div>
+
+  <div class="stages" id="stages">
+    <button class="stage-btn" data-stage="parse" onclick="runStage('parse')">
+      <span class="icon">1</span><span class="label">Parse</span>
+      <span class="status" id="status-parse"></span>
+    </button>
+    <button class="stage-btn" data-stage="qr" onclick="runStage('qr')">
+      <span class="icon">2</span><span class="label">QR Codes</span>
+      <span class="status" id="status-qr"></span>
+    </button>
+    <button class="stage-btn" data-stage="visuals" onclick="runStage('visuals')">
+      <span class="icon">3</span><span class="label">Visuals</span>
+      <span class="status" id="status-visuals"></span>
+    </button>
+    <button class="stage-btn" data-stage="audio" onclick="runStage('audio')">
+      <span class="icon">4</span><span class="label">Audio</span>
+      <span class="status" id="status-audio"></span>
+    </button>
+    <button class="stage-btn" data-stage="captions" onclick="runStage('captions')">
+      <span class="icon">5</span><span class="label">Captions</span>
+      <span class="status" id="status-captions"></span>
+    </button>
+    <button class="stage-btn" data-stage="assemble" onclick="runStage('assemble')">
+      <span class="icon">6</span><span class="label">Assemble</span>
+      <span class="status" id="status-assemble"></span>
+    </button>
+  </div>
+
+  <div class="actions">
+    <button class="btn" onclick="refreshOutputs()">Refresh Outputs</button>
+    <button class="btn danger" onclick="clearOutputs()">Clear All Outputs</button>
+  </div>
+
+  <div class="output-section">
+    <div class="output-header"><h3>Frames</h3><span class="count" id="count-frames">0</span></div>
+    <div class="output-body"><div class="gallery" id="gallery-frames"></div></div>
+  </div>
+  <div class="output-section">
+    <div class="output-header"><h3>QR Codes</h3><span class="count" id="count-qr">0</span></div>
+    <div class="output-body"><div class="gallery" id="gallery-qr"></div></div>
+  </div>
+  <div class="output-section">
+    <div class="output-header"><h3>Audio</h3><span class="count" id="count-audio">0</span></div>
+    <div class="output-body" id="body-audio"></div>
+  </div>
+  <div class="output-section" id="section-video" style="display:none">
+    <div class="output-header"><h3>Video</h3><span class="count" id="count-video"></span></div>
+    <div class="output-body">
+      <video id="video-player" controls style="width:100%;max-height:600px;border-radius:4px;background:#000"></video>
+      <div style="margin-top:0.75rem">
+        <a id="video-download" class="btn" style="text-decoration:none;display:inline-block" download="video.mp4">Download MP4</a>
+      </div>
+    </div>
+  </div>
+  <div class="output-section">
+    <div class="output-header"><h3>Log</h3></div>
+    <div class="output-body"><div class="log" id="log"></div></div>
+  </div>
+</main>
+
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('open')">
+  <img id="lightbox-img">
+</div>
+
+<script>
+const log = document.getElementById('log');
+function addLog(msg, cls = 'info') {
+  const ts = new Date().toLocaleTimeString();
+  log.innerHTML += `<span class="${cls}">[${ts}] ${msg}</span>\n`;
+  log.scrollTop = log.scrollHeight;
+}
+
+async function api(method, path, body) {
+  const opts = { method };
+  if (body) {
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+function setStageStatus(stage, text, state) {
+  const btn = document.querySelector(`[data-stage="${stage}"]`);
+  document.getElementById(`status-${stage}`).textContent = text;
+  btn.className = 'stage-btn' + (state ? ` ${state}` : '');
+}
+
+async function runStage(stage) {
+  setStageStatus(stage, 'Running...', 'running');
+  addLog(`Starting ${stage}...`);
+  let body = {};
+  if (stage === 'parse') {
+    const url = document.getElementById('url-input').value;
+    if (url) body.url = url;
+  }
+  if (stage === 'audio') {
+    body.dry_run = false;
+    body.provider = document.getElementById('tts-provider').value;
+  }
+  try {
+    const data = await api('POST', `/api/stages/${stage}`, body);
+    if (data.error) {
+      setStageStatus(stage, 'Error', '');
+      addLog(`${stage} error: ${data.error}`, 'err');
+    } else {
+      const info = Object.entries(data).filter(([k]) => k !== 'status').map(([k,v]) => `${k}=${v}`).join(', ');
+      setStageStatus(stage, 'Done', 'done');
+      addLog(`${stage} complete: ${info}`, 'ok');
+      refreshOutputs();
+    }
+  } catch (e) {
+    setStageStatus(stage, 'Error', '');
+    addLog(`${stage} failed: ${e.message}`, 'err');
+  }
+}
+
+async function runAll() {
+  for (const s of ['parse', 'qr', 'visuals', 'audio', 'captions', 'assemble']) {
+    await runStage(s);
+  }
+}
+
+async function refreshOutputs() {
+  try {
+    const data = await api('GET', '/api/outputs');
+    document.getElementById('count-frames').textContent = data.frames ? data.frames.length : 0;
+    const gallery = document.getElementById('gallery-frames');
+    gallery.innerHTML = '';
+    for (const frame of (data.frames || []).slice(0, 50)) {
+      const imgData = await api('GET', `/api/outputs/frames?name=${encodeURIComponent(frame.name)}`);
+      if (imgData.data) {
+        const img = document.createElement('img');
+        img.src = `data:image/png;base64,${imgData.data}`;
+        img.title = frame.name;
+        img.onclick = (e) => { e.stopPropagation(); document.getElementById('lightbox-img').src = img.src; document.getElementById('lightbox').classList.add('open'); };
+        gallery.appendChild(img);
+      }
+    }
+    document.getElementById('count-qr').textContent = data.qr_codes ? data.qr_codes.length : 0;
+    const qrGallery = document.getElementById('gallery-qr');
+    qrGallery.innerHTML = '';
+    for (const qr of (data.qr_codes || []).slice(0, 50)) {
+      const imgData = await api('GET', `/api/outputs/qr?name=${encodeURIComponent(qr.name)}`);
+      if (imgData.data) {
+        const img = document.createElement('img');
+        img.src = `data:image/png;base64,${imgData.data}`;
+        img.title = qr.name;
+        img.style.maxWidth = '120px';
+        img.onclick = (e) => { e.stopPropagation(); document.getElementById('lightbox-img').src = img.src; document.getElementById('lightbox').classList.add('open'); };
+        qrGallery.appendChild(img);
+      }
+    }
+    document.getElementById('count-audio').textContent = data.audio ? data.audio.length : 0;
+    const audioBody = document.getElementById('body-audio');
+    if (data.audio && data.audio.length > 0) {
+      audioBody.innerHTML = data.audio.map(a => `<div style="margin-bottom:0.3rem">${a.name} (${(a.size/1024).toFixed(1)} KB)</div>`).join('');
+    } else {
+      audioBody.innerHTML = '<span style="color:#666;font-style:italic">No audio files yet</span>';
+    }
+    // Video
+    const videoSection = document.getElementById('section-video');
+    if (data.video) {
+      videoSection.style.display = '';
+      const player = document.getElementById('video-player');
+      const dl = document.getElementById('video-download');
+      const videoUrl = '/api/outputs/video';
+      player.src = videoUrl;
+      dl.href = videoUrl;
+      document.getElementById('count-video').textContent = 'Ready';
+    } else {
+      videoSection.style.display = 'none';
+    }
+  } catch (e) {
+    addLog(`Failed to refresh outputs: ${e.message}`, 'err');
+  }
+}
+
+async function clearOutputs() {
+  if (!confirm('Clear all pipeline outputs?')) return;
+  try {
+    const data = await api('DELETE', '/api/outputs', { targets: ['all'] });
+    addLog(`Cleared: ${data.cleared.join(', ')}`, 'ok');
+    document.querySelectorAll('.stage-btn').forEach(b => { b.className = 'stage-btn'; b.querySelector('.status').textContent = ''; });
+    refreshOutputs();
+  } catch (e) {
+    addLog(`Clear failed: ${e.message}`, 'err');
+  }
+}
+
+refreshOutputs();
+</script>
+</body>
+</html>"""
+
+sys.stdout.write("Content-Type: text/html\n")
+sys.stdout.write("\n")
+sys.stdout.write(HTML)

@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""List QR codes or serve a specific one (via ?name=...)."""
+import base64
+import json
+import os
+import sys
+
+root = os.environ["PIPELINE_ROOT"]
+qr_dir = os.path.join(root, "output", "qr_codes")
+name = os.environ.get("QUERY_NAME", "")
+
+if name:
+    safe_name = os.path.basename(name)
+    path = os.path.join(qr_dir, safe_name)
+    if not os.path.isfile(path):
+        sys.stdout.write("Status: 404\n\n")
+        sys.stdout.write(json.dumps({"error": "qr code not found"}))
+        raise SystemExit(0)
+    with open(path, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    sys.stdout.write("\n")
+    sys.stdout.write(json.dumps({"name": safe_name, "data": data, "mime": "image/png"}))
+else:
+    qr_codes = []
+    if os.path.isdir(qr_dir):
+        for f in sorted(os.listdir(qr_dir)):
+            if f.endswith(".png"):
+                qr_codes.append({"name": f, "size": os.path.getsize(os.path.join(qr_dir, f))})
+    sys.stdout.write("\n")
+    sys.stdout.write(json.dumps({"qr_codes": qr_codes}))

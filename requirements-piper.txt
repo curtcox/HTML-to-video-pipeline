@@ -1,0 +1,2 @@
+# Piper TTS (local neural TTS)
+piper-tts>=1.2

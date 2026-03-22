@@ -1,0 +1,10 @@
+# Core pipeline dependencies
+Pillow>=10.0
+beautifulsoup4>=4.12
+qrcode[pil]>=7.4
+requests>=2.31
+
+# TTS: kokoro (optional — install via requirements-kokoro.txt)
+# TTS: piper (optional — install via requirements-piper.txt)
+# TTS: elevenlabs (optional — install via requirements-elevenlabs.txt)
+# TTS: say (macOS built-in, no install needed)

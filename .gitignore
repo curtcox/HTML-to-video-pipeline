@@ -1,5 +1,26 @@
-output/
-.env
+# Python bytecode and caches
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+
+# Build, packaging, and test artifacts
+build/
+dist/
+*.egg-info/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+
+# Project-generated outputs
+output/
+
+# OS and editor files
 .DS_Store
+.idea/
+.vscode/

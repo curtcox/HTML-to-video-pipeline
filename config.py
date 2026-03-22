@@ -24,23 +24,39 @@ class PipelineConfig:
     heading_color: str = "#ffffff"
 
     # Typography
-    font_size_title: int = 72
-    font_size_heading: int = 56
-    font_size_body: int = 36
-    font_size_caption: int = 32
-    line_spacing: float = 1.5
-    margin: int = 120  # pixels from edge
+    font_size_title: int = 88
+    font_size_heading: int = 64
+    font_size_body: int = 40
+    font_size_caption: int = 34
+    font_size_section_label: int = 32
+    line_spacing: float = 1.4
+    margin: int = 72  # pixels from edge
 
     # QR code settings
-    qr_size: int = 200  # pixels
+    qr_size: int = 260  # pixels
     qr_position: str = "bottom_right"  # bottom_right, bottom_left
-    qr_margin: int = 40
+    qr_margin: int = 32
 
     # TTS settings
-    tts_provider: str = "elevenlabs"  # elevenlabs, openai, google
+    tts_provider: str = "say"  # say, piper, elevenlabs, kokoro
+
+    # macOS say
+    say_voice: str = "Daniel"  # `say -v ?` for full list
+    say_rate: int = 175  # words per minute
+
+    # Piper (local neural TTS)
+    piper_model: str = "en_US-lessac-medium"  # `python3 -m piper.download_voices` for list
+    piper_length_scale: float = 1.0  # >1 = slower
+
+    # ElevenLabs (cloud)
     elevenlabs_api_key: str = field(default_factory=lambda: os.environ.get("ELEVENLABS_API_KEY", ""))
     elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"  # "Adam" - documentary style
     elevenlabs_model: str = "eleven_multilingual_v2"
+
+    # Kokoro (local, 82M params)
+    kokoro_voice: str = "af_heart"  # see https://huggingface.co/hexgrad/Kokoro-82M
+    kokoro_lang: str = "a"  # a=American English, b=British
+    kokoro_speed: float = 1.0
 
     # Pacing
     pause_after_heading: float = 1.5  # seconds

@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""List all pipeline outputs."""
+import json
+import os
+import sys
+
+root = os.environ["PIPELINE_ROOT"]
+output_dir = os.path.join(root, "output")
+
+def list_dir(path, extensions):
+    if not os.path.isdir(path):
+        return []
+    return [
+        {"name": f, "size": os.path.getsize(os.path.join(path, f))}
+        for f in sorted(os.listdir(path))
+        if os.path.isfile(os.path.join(path, f)) and any(f.endswith(e) for e in extensions)
+    ]
+
+body = json.dumps({
+    "segments": os.path.exists(os.path.join(output_dir, "segments.json")),
+    "frames": list_dir(os.path.join(output_dir, "frames"), [".png"]),
+    "qr_codes": list_dir(os.path.join(output_dir, "qr_codes"), [".png"]),
+    "audio": list_dir(os.path.join(output_dir, "audio"), [".mp3", ".wav"]),
+    "captions": os.path.exists(os.path.join(output_dir, "captions.srt")),
+    "video": os.path.exists(os.path.join(output_dir, "video.mp4")),
+})
+
+sys.stdout.write("\n")
+sys.stdout.write(body)

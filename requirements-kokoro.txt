@@ -1,0 +1,7 @@
+# Kokoro TTS (local, 82M params)
+# Requires: espeak-ng (brew install espeak-ng / apt install espeak-ng)
+# Requires: Python <=3.13 (pydantic v1 compat breaks on 3.14)
+kokoro>=0.9.4
+soundfile
+misaki[en]
+torch

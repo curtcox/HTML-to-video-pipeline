@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Clear pipeline outputs."""
+import json
+import os
+import shutil
+import sys
+
+root = os.environ["PIPELINE_ROOT"]
+output_dir = os.path.join(root, "output")
+
+request_body = sys.stdin.buffer.read()
+try:
+    params = json.loads(request_body) if request_body else {}
+except json.JSONDecodeError:
+    params = {}
+
+targets = params.get("targets", ["all"])
+cleared = []
+
+removals = {
+    "frames":   ("dir",  os.path.join(output_dir, "frames")),
+    "qr_codes": ("dir",  os.path.join(output_dir, "qr_codes")),
+    "audio":    ("dir",  os.path.join(output_dir, "audio")),
+    "captions": ("file", os.path.join(output_dir, "captions.srt")),
+    "segments": ("file", os.path.join(output_dir, "segments.json")),
+    "video":    ("file", os.path.join(output_dir, "video.mp4")),
+}
+
+for name, (kind, path) in removals.items():
+    if "all" not in targets and name not in targets:
+        continue
+    if kind == "dir" and os.path.isdir(path):
+        shutil.rmtree(path)
+        cleared.append(name)
+    elif kind == "file" and os.path.exists(path):
+        os.remove(path)
+        cleared.append(name)
+
+sys.stdout.write("\n")
+sys.stdout.write(json.dumps({"status": "ok", "cleared": cleared}))

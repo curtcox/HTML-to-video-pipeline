@@ -1,0 +1,3 @@
+# ElevenLabs TTS (cloud API)
+# Requires: ELEVENLABS_API_KEY environment variable
+elevenlabs>=1.0

@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Run the parse stage: fetch article HTML and extract segments."""
+import json
+import os
+import sys
+
+root = os.environ["PIPELINE_ROOT"]
+output_dir = os.path.join(root, "output")
+os.makedirs(output_dir, exist_ok=True)
+
+request_body = sys.stdin.buffer.read()
+try:
+    params = json.loads(request_body) if request_body else {}
+except json.JSONDecodeError:
+    params = {}
+
+url = params.get("url", "")
+segments_json_path = params.get("segments_json", "")
+
+try:
+    from parse_article import fetch_html, parse_article, segments_to_json, get_all_citation_urls, segments_from_json
+
+    if segments_json_path:
+        segments = segments_from_json(segments_json_path)
+    elif url:
+        html = fetch_html(url)
+        segments = parse_article(html)
+    else:
+        import build_segments as bs
+        segments_path = os.path.join(output_dir, "segments.json")
+        with open(segments_path, "w") as f:
+            json.dump(bs.segments, f, indent=2)
+        segments = segments_from_json(segments_path)
+
+    segments_path = os.path.join(output_dir, "segments.json")
+    with open(segments_path, "w") as f:
+        f.write(segments_to_json(segments))
+
+    citations = get_all_citation_urls(segments)
+    body = json.dumps({
+        "status": "ok",
+        "segment_count": len(segments),
+        "citation_count": len(citations),
+    })
+except Exception as e:
+    sys.stdout.write("Status: 500\n\n")
+    sys.stdout.write(json.dumps({"error": str(e)}))
+    raise SystemExit(0)
+
+sys.stdout.write("\n")
+sys.stdout.write(body)

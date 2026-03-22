@@ -7,14 +7,12 @@ duration of its corresponding audio, with captions burned in.
 import os
 import subprocess
 import json
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 
 from config import PipelineConfig
-
-if TYPE_CHECKING:
-    from generate_audio import AudioSegment
-    from generate_visuals import VisualFrame
+from generate_audio import AudioSegment
+from generate_visuals import VisualFrame
 
 
 def create_concat_file(
@@ -37,7 +35,7 @@ def create_concat_file(
 
 
 def concatenate_audio_files(
-    audio_segments: List[Any],
+    audio_segments: List[AudioSegment],
     config: PipelineConfig,
     output_path: str,
 ) -> str:
@@ -92,8 +90,8 @@ def _generate_silence_mp3(duration: float, output_path: str):
 
 
 def build_frame_sequence(
-    visual_frames: List[Any],
-    audio_segments: List[Any],
+    visual_frames: List[VisualFrame],
+    audio_segments: List[AudioSegment],
     config: PipelineConfig,
 ) -> List[Dict]:
     """
@@ -128,8 +126,8 @@ def build_frame_sequence(
 
 
 def assemble_video(
-    visual_frames: List[Any],
-    audio_segments: List[Any],
+    visual_frames: List[VisualFrame],
+    audio_segments: List[AudioSegment],
     srt_path: str,
     config: PipelineConfig,
     output_dir: str,
@@ -201,14 +199,13 @@ def assemble_video(
         f"MarginV=60"
     )
 
-    # FFmpeg filter parser treats ',' as a separator unless escaped.
-    subtitle_style_escaped = subtitle_style.replace(",", "\\,")
-
+    # When passing as a list (no shell), don't wrap force_style value in quotes.
+    vf = f"subtitles={srt_escaped}:force_style={subtitle_style}"
     cmd = [
         "ffmpeg", "-y",
         "-i", raw_video,
         "-i", combined_audio,
-        "-vf", f"subtitles=filename={srt_escaped}:force_style={subtitle_style_escaped}",
+        "-vf", vf,
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", "23",
@@ -217,48 +214,24 @@ def assemble_video(
         "-shortest",
         final_output,
     ]
-    try:
-        subprocess.run(cmd, capture_output=True, check=True)
-    except subprocess.CalledProcessError as e:
-        stderr_text = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        stdout_text = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
-
-        if "No such filter: 'subtitles'" in stderr_text:
-            print("\nFFmpeg build does not support burned-in subtitles; falling back to embedded subtitle track.")
-            fallback_cmd = [
-                "ffmpeg", "-y",
-                "-i", raw_video,
-                "-i", combined_audio,
-                "-i", srt_path,
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-map", "2:s:0",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-c:s", "mov_text",
-                "-metadata:s:s:0", "language=eng",
-                "-shortest",
-                final_output,
-            ]
-            try:
-                subprocess.run(fallback_cmd, capture_output=True, check=True)
-            except subprocess.CalledProcessError as fallback_error:
-                if fallback_error.stdout:
-                    print("\nFFmpeg fallback stdout:\n" + fallback_error.stdout.decode("utf-8", errors="replace"))
-                if fallback_error.stderr:
-                    print("\nFFmpeg fallback stderr:\n" + fallback_error.stderr.decode("utf-8", errors="replace"))
-                raise
-            print("Captions were added as an embedded subtitle track, not burned into the video.")
-            print(f"\nFinal video: {final_output}")
-            print(f"Duration: {total_audio_duration:.1f}s ({total_audio_duration/60:.1f} minutes)")
-            return final_output
-
-        if e.stdout:
-            print("\nFFmpeg stdout:\n" + stdout_text)
-        if e.stderr:
-            print("\nFFmpeg stderr:\n" + stderr_text)
-        raise
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        # Fall back: combine without subtitles
+        print(f"  Subtitle burn-in failed (exit {result.returncode}): {result.stderr[-500:]}")
+        print("  Falling back to video without burned-in subtitles...")
+        cmd_fallback = [
+            "ffmpeg", "-y",
+            "-i", raw_video,
+            "-i", combined_audio,
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            final_output,
+        ]
+        subprocess.run(cmd_fallback, capture_output=True, check=True)
 
     print(f"\nFinal video: {final_output}")
     print(f"Duration: {total_audio_duration:.1f}s ({total_audio_duration/60:.1f} minutes)")

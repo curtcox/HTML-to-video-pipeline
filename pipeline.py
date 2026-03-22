@@ -20,9 +20,13 @@ import os
 import sys
 import json
 import time
-from types import SimpleNamespace
 
 from config import PipelineConfig
+from parse_article import fetch_html, parse_article, get_all_citation_urls, segments_from_json, segments_to_json
+from generate_qr import generate_all_qr_codes
+from generate_visuals import generate_frames_for_segments
+from generate_audio import generate_all_audio
+from generate_captions import generate_srt
 from assemble_video import assemble_video
 
 
@@ -35,12 +39,6 @@ def run_pipeline(config: PipelineConfig, dry_run: bool = False, segments_json: s
         dry_run: If True, estimate audio durations without calling TTS API
         segments_json: Path to pre-parsed segments JSON (skips HTML fetch/parse)
     """
-    from parse_article import fetch_html, parse_article, get_all_citation_urls, segments_from_json
-    from generate_qr import generate_all_qr_codes
-    from generate_visuals import generate_frames_for_segments
-    from generate_audio import generate_all_audio
-    from generate_captions import generate_srt
-
     start_time = time.time()
     output_dir = config.output_dir
     os.makedirs(output_dir, exist_ok=True)
@@ -137,7 +135,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Convert an HTML article into a narrated video"
     )
-    parser.add_argument("url", nargs="?", default="", help="URL of the HTML article (or path to local HTML file)")
+    parser.add_argument("url", help="URL of the HTML article (or path to local HTML file)")
     parser.add_argument("--segments-json", default="",
                         help="Path to pre-parsed segments JSON (skips HTML fetch)")
     parser.add_argument("--dry-run", action="store_true",
@@ -161,43 +159,6 @@ def main():
 
     if args.voice_id:
         config.elevenlabs_voice_id = args.voice_id
-
-    if not args.url:
-        output_dir = config.output_dir
-        frames_dir = os.path.join(output_dir, "frames")
-        audio_meta_path = os.path.join(output_dir, "audio", "audio_metadata.json")
-        srt_path = os.path.join(output_dir, "captions.srt")
-
-        if not os.path.exists(frames_dir):
-            print(f"ERROR: frames directory not found: {frames_dir}")
-            sys.exit(1)
-        if not os.path.exists(audio_meta_path):
-            print(f"ERROR: audio metadata not found: {audio_meta_path}")
-            sys.exit(1)
-        if not os.path.exists(srt_path):
-            print(f"ERROR: captions file not found: {srt_path}")
-            sys.exit(1)
-
-        with open(audio_meta_path, "r") as f:
-            audio_meta = json.load(f)
-        audio_segments = [SimpleNamespace(**a) for a in audio_meta]
-
-        frame_files = sorted(
-            f for f in os.listdir(frames_dir)
-            if f.lower().endswith(".png")
-        )
-        visual_frames = [
-            SimpleNamespace(image_path=os.path.join(frames_dir, fn), duration=0, segment_index=i)
-            for i, fn in enumerate(frame_files)
-        ]
-
-        print("\n" + "=" * 60)
-        print("STEP 6: Assembling video")
-        print("=" * 60)
-        final_path = assemble_video(visual_frames, audio_segments, srt_path, config, output_dir)
-        print(f"\n{'=' * 60}")
-        print(f"DONE! Video: {final_path}")
-        return
 
     if not args.dry_run and not config.elevenlabs_api_key:
         print("ERROR: ELEVENLABS_API_KEY environment variable not set.")
