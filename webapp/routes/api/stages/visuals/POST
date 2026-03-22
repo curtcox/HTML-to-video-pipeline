@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run the visual frame generation stage."""
+from dataclasses import asdict
 import json
 import os
 import sys
@@ -25,6 +26,9 @@ try:
         config = PipelineConfig(output_dir=output_dir)
         frames_dir = os.path.join(output_dir, "frames")
         os.makedirs(frames_dir, exist_ok=True)
+        for name in os.listdir(frames_dir):
+            if name.endswith(".png"):
+                os.remove(os.path.join(frames_dir, name))
 
         # Load qr_map if QR stage has run
         qr_map_path = os.path.join(output_dir, "qr_map.json")
@@ -35,10 +39,12 @@ try:
             qr_map = {}
 
         # Signature: (segments, qr_map, config, output_dir)
-        frame_paths = generate_frames_for_segments(segments, qr_map, config, frames_dir)
+        frames = generate_frames_for_segments(segments, qr_map, config, frames_dir)
+        with open(os.path.join(output_dir, "frames.json"), "w") as f:
+            json.dump([asdict(frame) for frame in frames], f, indent=2)
     body = json.dumps({
         "status": "ok",
-        "frame_count": len(frame_paths),
+        "frame_count": len(frames),
     })
 except Exception as e:
     import traceback
