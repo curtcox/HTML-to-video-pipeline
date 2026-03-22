@@ -39,6 +39,8 @@ HTML = r"""<!DOCTYPE html>
   .btn.danger { border-color: var(--error); color: var(--error); }
   .btn.danger:hover { background: var(--error); color: white; }
   .output-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1.5rem; }
+  .warning-banner { display:none; background: rgba(255, 167, 38, 0.12); border: 1px solid var(--warn); color: #ffd18a; border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 1.5rem; }
+  .warning-banner.open { display: block; }
   .output-header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
   .output-header h3 { color: var(--heading); font-size: 1rem; }
   .output-header .count { color: var(--accent); font-size: 0.85rem; }
@@ -129,6 +131,8 @@ HTML = r"""<!DOCTYPE html>
     <button class="btn" onclick="refreshOutputs()">Refresh Outputs</button>
     <button class="btn danger" onclick="clearOutputs()">Clear All Outputs</button>
   </div>
+
+  <div class="warning-banner" id="sync-warning"></div>
 
   <div class="output-section">
     <div class="output-header"><h3>Frames</h3><span class="count" id="count-frames">0</span></div>
@@ -275,6 +279,19 @@ async function refreshOutputs() {
   try {
     const data = await api('GET', '/api/outputs');
     audioNames = (data.audio || []).map(a => a.name);
+    const warningBox = document.getElementById('sync-warning');
+    if (data.sync_report && data.sync_report.warnings && data.sync_report.warnings.length > 0) {
+      const report = data.sync_report;
+      warningBox.classList.add('open');
+      warningBox.innerHTML = `
+        <strong>Sync warning</strong><br>
+        Audio ${report.combined_audio_duration.toFixed(3)}s, raw video ${report.raw_video_duration.toFixed(3)}s, final video ${report.final_video_duration.toFixed(3)}s.<br>
+        ${report.warnings.map(w => w.replace(/</g, '&lt;')).join('<br>')}
+      `;
+    } else {
+      warningBox.classList.remove('open');
+      warningBox.textContent = '';
+    }
     document.getElementById('count-frames').textContent = data.frames ? data.frames.length : 0;
     const gallery = document.getElementById('gallery-frames');
     gallery.innerHTML = '';

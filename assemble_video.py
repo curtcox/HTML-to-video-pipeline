@@ -29,9 +29,22 @@ class SegmentTiming:
         return self.audio_duration + self.pause_duration
 
 
+@dataclass
+class SyncReport:
+    """High-level sync verification for assembled outputs."""
+    combined_audio_duration: float
+    frame_sequence_duration: float
+    raw_video_duration: float
+    final_video_duration: float
+    raw_minus_audio: float
+    final_minus_audio: float
+    warnings: List[str]
+
+
 def create_concat_file(
     entries: List[Dict],
     output_path: str,
+    include_durations: bool = True,
 ) -> str:
     """
     Create an FFmpeg concat demuxer file.
@@ -41,9 +54,10 @@ def create_concat_file(
     with open(output_path, "w") as f:
         for entry in entries:
             f.write(f"file '{entry['file']}'\n")
-            f.write(f"duration {entry['duration']}\n")
+            if include_durations:
+                f.write(f"duration {entry['duration']}\n")
         # Repeat last entry (FFmpeg concat quirk)
-        if entries:
+        if include_durations and entries:
             f.write(f"file '{entries[-1]['file']}'\n")
     return output_path
 
@@ -155,6 +169,76 @@ def _probe_audio_duration(path: str) -> float:
     return float(result.stdout.strip())
 
 
+def _round_duration_to_frames(duration: float, fps: int) -> float:
+    """Round a duration onto an exact frame boundary for deterministic video timing."""
+    frame_count = max(1, round(duration * fps))
+    return frame_count / fps
+
+
+def _render_frame_clip(
+    image_path: str,
+    duration: float,
+    output_path: str,
+    config: PipelineConfig,
+) -> float:
+    """Render one still image into a short video clip with an exact frame count."""
+    clip_duration = _round_duration_to_frames(duration, config.fps)
+    vf = (
+        f"scale={config.video_width}:{config.video_height}:"
+        f"force_original_aspect_ratio=decrease,"
+        f"pad={config.video_width}:{config.video_height}:(ow-iw)/2:(oh-ih)/2"
+    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1",
+        "-i", image_path,
+        "-t", str(clip_duration),
+        "-r", str(config.fps),
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        output_path,
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+    return clip_duration
+
+
+def _render_frame_sequence_video(
+    frame_sequence: List[Dict],
+    raw_video_path: str,
+    config: PipelineConfig,
+    debug_concat_path: Optional[str] = None,
+) -> float:
+    """Render the visual timeline as concatenated exact-duration video clips."""
+    with tempfile.TemporaryDirectory(prefix="frame-clips-", dir=os.path.dirname(raw_video_path)) as tmpdir:
+        clip_entries: List[Dict] = []
+        total_duration = 0.0
+
+        for i, entry in enumerate(frame_sequence):
+            clip_path = os.path.join(tmpdir, f"clip_{i:04d}.mp4")
+            clip_duration = _render_frame_clip(entry["file"], entry["duration"], clip_path, config)
+            clip_entries.append({"file": os.path.abspath(clip_path), "duration": clip_duration})
+            total_duration += clip_duration
+
+        clip_list_path = os.path.join(tmpdir, "clips.txt")
+        create_concat_file(clip_entries, clip_list_path, include_durations=False)
+        if debug_concat_path:
+            create_concat_file(clip_entries, debug_concat_path, include_durations=False)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", clip_list_path,
+            "-c", "copy",
+            raw_video_path,
+        ]
+        subprocess.run(cmd, capture_output=True, check=True)
+
+    return total_duration
+
+
 def build_frame_sequence(
     visual_frames: List[VisualFrame],
     segment_timings: Dict[int, SegmentTiming],
@@ -176,8 +260,7 @@ def build_frame_sequence(
     sequence = []
     for segment_index, frames in grouped_frames:
         timing = segment_timings.get(segment_index)
-        target_duration = _target_segment_duration(timing, frames)
-        frame_durations = _allocate_group_durations(frames, target_duration)
+        frame_durations = _allocate_group_durations(frames, timing)
 
         for frame, duration in zip(frames, frame_durations):
             sequence.append({
@@ -186,18 +269,6 @@ def build_frame_sequence(
             })
 
     return sequence
-
-
-def _target_segment_duration(
-    timing: Optional[SegmentTiming],
-    frames: List[VisualFrame],
-) -> float:
-    """Compute how much screen time this segment should get in total."""
-    if timing is None:
-        explicit = sum(frame.duration for frame in frames if frame.duration > 0)
-        return explicit if explicit > 0 else 5.0
-
-    return timing.total_duration
 
 
 def _pause_after_segment(segment_type: str, config: PipelineConfig) -> float:
@@ -211,36 +282,67 @@ def _pause_after_segment(segment_type: str, config: PipelineConfig) -> float:
     return 0.3
 
 
-def _allocate_group_durations(frames: List[VisualFrame], target_duration: float) -> List[float]:
-    """Distribute a segment's time budget across its frames without global drift."""
+def _allocate_group_durations(
+    frames: List[VisualFrame],
+    timing: Optional[SegmentTiming],
+) -> List[float]:
+    """Distribute time so narration-matched frames stay aligned with spoken audio."""
     if not frames:
         return []
 
+    if timing is None:
+        target_duration = sum(max(frame.duration, 0.0) for frame in frames)
+        if target_duration <= 0:
+            target_duration = 5.0
+        share = target_duration / len(frames)
+        return [share for _ in frames]
+
+    audio_budget = timing.audio_duration
+    pause_budget = timing.pause_duration
     fixed = [max(frame.duration, 0.0) for frame in frames]
     fixed_total = sum(duration for duration in fixed if duration > 0)
     flexible_indexes = [i for i, duration in enumerate(fixed) if duration == 0]
+    durations = [0.0 for _ in frames]
 
     if flexible_indexes:
-        # Keep most of the time on the narration-matched frame(s).
-        max_fixed_total = target_duration * 0.35
-        allowed_fixed_total = min(fixed_total, max_fixed_total)
-        scale = allowed_fixed_total / fixed_total if fixed_total > 0 else 0.0
-        durations = [
-            duration * scale if duration > 0 else 0.0
-            for duration in fixed
-        ]
-        remaining = max(0.0, target_duration - sum(durations))
-        share = remaining / len(flexible_indexes)
+        if fixed_total > 0 and pause_budget > 0:
+            scale = min(1.0, pause_budget / fixed_total)
+            for idx, duration in enumerate(fixed):
+                if duration > 0:
+                    durations[idx] = duration * scale
+        remaining = audio_budget + max(0.0, pause_budget - sum(durations))
+        share = remaining / len(flexible_indexes) if flexible_indexes else 0.0
         for idx in flexible_indexes:
             durations[idx] = share
         return durations
 
-    if fixed_total <= 0:
-        share = target_duration / len(frames)
-        return [share for _ in frames]
+    primary_idx = _choose_primary_frame(frames)
+    durations[primary_idx] = audio_budget
+    supplemental_indexes = [i for i in range(len(frames)) if i != primary_idx]
+    supplemental_total = sum(fixed[i] for i in supplemental_indexes if fixed[i] > 0)
 
-    scale = target_duration / fixed_total
-    return [duration * scale for duration in fixed]
+    if supplemental_indexes and pause_budget > 0:
+        if supplemental_total > 0:
+            scale = pause_budget / supplemental_total
+            for idx in supplemental_indexes:
+                if fixed[idx] > 0:
+                    durations[idx] = fixed[idx] * scale
+        else:
+            share = pause_budget / len(supplemental_indexes)
+            for idx in supplemental_indexes:
+                durations[idx] = share
+    else:
+        durations[primary_idx] += pause_budget
+
+    return durations
+
+
+def _choose_primary_frame(frames: List[VisualFrame]) -> int:
+    """Pick the frame that should remain on screen while the segment audio is spoken."""
+    for idx, frame in enumerate(frames):
+        if not os.path.basename(frame.image_path).startswith("diagram_"):
+            return idx
+    return 0
 
 
 def assemble_video(
@@ -249,7 +351,7 @@ def assemble_video(
     srt_path: str,
     config: PipelineConfig,
     output_dir: str,
-) -> str:
+) -> tuple[str, SyncReport]:
     """
     Assemble the final video.
 
@@ -270,22 +372,16 @@ def assemble_video(
 
     print("Step 2: Building frame sequence...")
     frame_sequence = build_frame_sequence(visual_frames, segment_timings)
+    frame_sequence_duration = sum(entry["duration"] for entry in frame_sequence)
 
-    # Create concat file
+    # Create debug concat file
     concat_path = os.path.join(output_dir, "frames.txt")
     create_concat_file(frame_sequence, concat_path)
 
     print("Step 3: Creating video from frames...")
     raw_video = os.path.join(output_dir, "raw_video.mp4")
-    cmd = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", concat_path,
-        "-vsync", "vfr",
-        "-pix_fmt", "yuv420p",
-        "-vf", f"scale={config.video_width}:{config.video_height}:force_original_aspect_ratio=decrease,pad={config.video_width}:{config.video_height}:(ow-iw)/2:(oh-ih)/2",
-        raw_video,
-    ]
-    subprocess.run(cmd, capture_output=True, check=True)
+    rendered_video_duration = _render_frame_sequence_video(frame_sequence, raw_video, config)
+    print(f"  Raw video: {rendered_video_duration:.1f}s")
 
     print("Step 4: Combining video + audio + captions...")
     final_output = os.path.join(output_dir, config.output_filename)
@@ -339,9 +435,60 @@ def assemble_video(
         ]
         subprocess.run(cmd_fallback, capture_output=True, check=True)
 
+    raw_video_duration = _probe_audio_duration(raw_video)
+    final_video_duration = _probe_audio_duration(final_output)
+    sync_report = _build_sync_report(
+        total_audio_duration,
+        frame_sequence_duration,
+        raw_video_duration,
+        final_video_duration,
+    )
+    with open(os.path.join(output_dir, "sync_report.json"), "w") as f:
+        json.dump(sync_report.__dict__, f, indent=2)
+
     print(f"\nFinal video: {final_output}")
     print(f"Duration: {total_audio_duration:.1f}s ({total_audio_duration/60:.1f} minutes)")
-    return final_output
+    if sync_report.warnings:
+        print("Sync warnings:")
+        for warning in sync_report.warnings:
+            print(f"  - {warning}")
+    return final_output, sync_report
+
+
+def _build_sync_report(
+    combined_audio_duration: float,
+    frame_sequence_duration: float,
+    raw_video_duration: float,
+    final_video_duration: float,
+) -> SyncReport:
+    """Summarize timeline mismatches and emit warnings when they exceed tolerance."""
+    raw_minus_audio = raw_video_duration - combined_audio_duration
+    final_minus_audio = final_video_duration - combined_audio_duration
+    frame_minus_audio = frame_sequence_duration - combined_audio_duration
+    warnings: List[str] = []
+
+    if abs(frame_minus_audio) > 0.05:
+        warnings.append(
+            f"Frame sequence differs from audio by {frame_minus_audio:.3f}s before raw video render."
+        )
+    if abs(raw_minus_audio) > 0.15:
+        warnings.append(
+            f"Raw video differs from combined audio by {raw_minus_audio:.3f}s."
+        )
+    if abs(final_minus_audio) > 0.15:
+        warnings.append(
+            f"Final video differs from combined audio by {final_minus_audio:.3f}s."
+        )
+
+    return SyncReport(
+        combined_audio_duration=combined_audio_duration,
+        frame_sequence_duration=frame_sequence_duration,
+        raw_video_duration=raw_video_duration,
+        final_video_duration=final_video_duration,
+        raw_minus_audio=raw_minus_audio,
+        final_minus_audio=final_minus_audio,
+        warnings=warnings,
+    )
 
 
 if __name__ == "__main__":

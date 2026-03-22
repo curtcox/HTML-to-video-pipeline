@@ -59,8 +59,12 @@ try:
                 )
 
         config = PipelineConfig(output_dir=output_dir)
-        video_path = assemble_video(visual_frames, audio_segments, srt_path, config, output_dir)
-    body = json.dumps({"status": "ok", "video_path": video_path})
+        video_path, sync_report = assemble_video(visual_frames, audio_segments, srt_path, config, output_dir)
+    body = json.dumps({
+        "status": "ok",
+        "video_path": video_path,
+        "sync_warnings": len(sync_report.warnings),
+    })
 except Exception as e:
     import traceback
     sys.stdout.write("Status: 500\n\n")
