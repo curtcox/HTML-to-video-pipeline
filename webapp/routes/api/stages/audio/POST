@@ -4,6 +4,8 @@ import json
 import os
 import sys
 
+from webapp.route_io import redirect_stdout_to_stderr
+
 root = os.environ["PIPELINE_ROOT"]
 output_dir = os.path.join(root, "output")
 segments_path = os.path.join(output_dir, "segments.json")
@@ -22,20 +24,18 @@ if not os.path.exists(segments_path):
     sys.stdout.write(json.dumps({"error": "No segments.json found. Run parse stage first."}))
     raise SystemExit(0)
 
-_real_stdout = sys.stdout
-sys.stdout = sys.stderr
-
 try:
-    from config import PipelineConfig
-    from parse_article import segments_from_json
-    from generate_audio import generate_all_audio
+    with redirect_stdout_to_stderr():
+        from config import PipelineConfig
+        from parse_article import segments_from_json
+        from generate_audio import generate_all_audio
 
-    segments = segments_from_json(segments_path)
-    config = PipelineConfig(output_dir=output_dir, tts_provider=provider)
-    audio_dir = os.path.join(output_dir, "audio")
-    os.makedirs(audio_dir, exist_ok=True)
+        segments = segments_from_json(segments_path)
+        config = PipelineConfig(output_dir=output_dir, tts_provider=provider)
+        audio_dir = os.path.join(output_dir, "audio")
+        os.makedirs(audio_dir, exist_ok=True)
 
-    audio_segments = generate_all_audio(segments, config, audio_dir, dry_run=dry_run)
+        audio_segments = generate_all_audio(segments, config, audio_dir, dry_run=dry_run)
     body = json.dumps({
         "status": "ok",
         "provider": provider,
@@ -44,11 +44,8 @@ try:
     })
 except Exception as e:
     import traceback
-    sys.stdout = _real_stdout
     sys.stdout.write("Status: 500\n\n")
     sys.stdout.write(json.dumps({"error": str(e), "traceback": traceback.format_exc()}))
     raise SystemExit(0)
 
-sys.stdout = _real_stdout
-sys.stdout.write("\n")
 sys.stdout.write(body)

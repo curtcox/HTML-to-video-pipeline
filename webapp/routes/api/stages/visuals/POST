@@ -4,6 +4,8 @@ import json
 import os
 import sys
 
+from webapp.route_io import redirect_stdout_to_stderr
+
 root = os.environ["PIPELINE_ROOT"]
 output_dir = os.path.join(root, "output")
 segments_path = os.path.join(output_dir, "segments.json")
@@ -13,40 +15,35 @@ if not os.path.exists(segments_path):
     sys.stdout.write(json.dumps({"error": "No segments.json found. Run parse stage first."}))
     raise SystemExit(0)
 
-_real_stdout = sys.stdout
-sys.stdout = sys.stderr
-
 try:
-    from config import PipelineConfig
-    from parse_article import segments_from_json
-    from generate_visuals import generate_frames_for_segments
+    with redirect_stdout_to_stderr():
+        from config import PipelineConfig
+        from parse_article import segments_from_json
+        from generate_visuals import generate_frames_for_segments
 
-    segments = segments_from_json(segments_path)
-    config = PipelineConfig(output_dir=output_dir)
-    frames_dir = os.path.join(output_dir, "frames")
-    os.makedirs(frames_dir, exist_ok=True)
+        segments = segments_from_json(segments_path)
+        config = PipelineConfig(output_dir=output_dir)
+        frames_dir = os.path.join(output_dir, "frames")
+        os.makedirs(frames_dir, exist_ok=True)
 
-    # Load qr_map if QR stage has run
-    qr_map_path = os.path.join(output_dir, "qr_map.json")
-    if os.path.exists(qr_map_path):
-        with open(qr_map_path) as f:
-            qr_map = json.load(f)
-    else:
-        qr_map = {}
+        # Load qr_map if QR stage has run
+        qr_map_path = os.path.join(output_dir, "qr_map.json")
+        if os.path.exists(qr_map_path):
+            with open(qr_map_path) as f:
+                qr_map = json.load(f)
+        else:
+            qr_map = {}
 
-    # Signature: (segments, qr_map, config, output_dir)
-    frame_paths = generate_frames_for_segments(segments, qr_map, config, frames_dir)
+        # Signature: (segments, qr_map, config, output_dir)
+        frame_paths = generate_frames_for_segments(segments, qr_map, config, frames_dir)
     body = json.dumps({
         "status": "ok",
         "frame_count": len(frame_paths),
     })
 except Exception as e:
     import traceback
-    sys.stdout = _real_stdout
     sys.stdout.write("Status: 500\n\n")
     sys.stdout.write(json.dumps({"error": str(e), "traceback": traceback.format_exc()}))
     raise SystemExit(0)
 
-sys.stdout = _real_stdout
-sys.stdout.write("\n")
 sys.stdout.write(body)

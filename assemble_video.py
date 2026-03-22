@@ -7,6 +7,8 @@ duration of its corresponding audio, with captions burned in.
 import os
 import subprocess
 import json
+import tempfile
+import wave
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 
@@ -43,17 +45,18 @@ def concatenate_audio_files(
     Concatenate all audio segments into a single audio file,
     with pauses between sections.
     """
-    # Build concat list with silence gaps
-    list_path = output_path + ".list.txt"
-    silence_dir = os.path.dirname(output_path)
+    normalized_segments: List[str] = []
+    sample_rate = 44100
 
-    with open(list_path, "w") as f:
+    with tempfile.TemporaryDirectory(prefix="audio-concat-", dir=os.path.dirname(output_path)) as tmpdir:
         for i, seg in enumerate(audio_segments):
             if not os.path.exists(seg.audio_path):
                 continue
-            f.write(f"file '{os.path.abspath(seg.audio_path)}'\n")
 
-            # Add pause after certain segment types
+            normalized_path = os.path.join(tmpdir, f"segment_{i:04d}.wav")
+            _normalize_audio_for_concat(seg.audio_path, normalized_path, sample_rate)
+            normalized_segments.append(normalized_path)
+
             if seg.segment_type == "heading":
                 pause = config.pause_after_heading
             elif seg.segment_type == "paragraph":
@@ -62,31 +65,62 @@ def concatenate_audio_files(
                 pause = 0.3
 
             if pause > 0:
-                silence_path = os.path.join(silence_dir, f"silence_{i}.mp3")
-                _generate_silence_mp3(pause, silence_path)
-                f.write(f"file '{os.path.abspath(silence_path)}'\n")
+                silence_path = os.path.join(tmpdir, f"silence_{i:04d}.wav")
+                _generate_silence_wav(pause, silence_path, sample_rate)
+                normalized_segments.append(silence_path)
 
-    # Concatenate with ffmpeg
-    cmd = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", list_path,
-        "-c:a", "libmp3lame", "-q:a", "2",
-        output_path,
-    ]
-    subprocess.run(cmd, capture_output=True, check=True)
+        if not normalized_segments:
+            raise ValueError("No audio segments found to concatenate.")
+
+        _concatenate_wav_files(normalized_segments, output_path)
+
     return output_path
 
 
-def _generate_silence_mp3(duration: float, output_path: str):
-    """Generate a silent MP3 file."""
+def _normalize_audio_for_concat(input_path: str, output_path: str, sample_rate: int):
+    """Convert an audio clip to mono 16-bit PCM WAV for clean concatenation."""
     cmd = [
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"anullsrc=r=44100:cl=mono",
-        "-t", str(duration),
-        "-c:a", "libmp3lame", "-q:a", "9",
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-ac", "1",
+        "-ar", str(sample_rate),
+        "-c:a", "pcm_s16le",
         output_path,
     ]
     subprocess.run(cmd, capture_output=True, check=True)
+
+
+def _generate_silence_wav(duration: float, output_path: str, sample_rate: int):
+    """Generate a silent mono PCM WAV segment."""
+    frame_count = max(1, int(round(duration * sample_rate)))
+    with wave.open(output_path, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frame_count)
+
+
+def _concatenate_wav_files(input_paths: List[str], output_path: str):
+    """Join normalized WAV files without introducing lossy encoder padding."""
+    with wave.open(input_paths[0], "rb") as first_wav:
+        nchannels = first_wav.getnchannels()
+        sampwidth = first_wav.getsampwidth()
+        framerate = first_wav.getframerate()
+
+    with wave.open(output_path, "wb") as out_wav:
+        out_wav.setnchannels(nchannels)
+        out_wav.setsampwidth(sampwidth)
+        out_wav.setframerate(framerate)
+
+        for path in input_paths:
+            with wave.open(path, "rb") as in_wav:
+                if (
+                    in_wav.getnchannels() != nchannels
+                    or in_wav.getsampwidth() != sampwidth
+                    or in_wav.getframerate() != framerate
+                ):
+                    raise ValueError(f"Audio normalization mismatch for {path}")
+                out_wav.writeframes(in_wav.readframes(in_wav.getnframes()))
 
 
 def build_frame_sequence(
@@ -143,7 +177,7 @@ def assemble_video(
     os.makedirs(output_dir, exist_ok=True)
 
     print("Step 1: Concatenating audio...")
-    combined_audio = os.path.join(output_dir, "combined_audio.mp3")
+    combined_audio = os.path.join(output_dir, "combined_audio.wav")
     concatenate_audio_files(audio_segments, config, combined_audio)
 
     # Get total audio duration
