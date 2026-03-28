@@ -101,7 +101,16 @@ HTML = r"""<!DOCTYPE html>
         <option value="kokoro">Kokoro (local 82M)</option>
         <option value="elevenlabs">ElevenLabs (cloud)</option>
       </select>
-    </div>
+  </div>
+  <div>
+    <label for="assemble-mode">Assemble Variant</label>
+    <select id="assemble-mode">
+      <option value="combined" selected>combined (recommended)</option>
+      <option value="text">text only</option>
+      <option value="diagrams">diagrams only</option>
+      <option value="all">all variants</option>
+    </select>
+  </div>
     <button class="btn" onclick="runAll()">Run All Stages</button>
   </div>
 
@@ -277,7 +286,9 @@ async function runStage(stage) {
     body.provider = document.getElementById('tts-provider').value;
   }
   if (stage === 'assemble') {
-    body.video_modes = ['text', 'diagrams', 'combined'];
+    const mode = document.getElementById('assemble-mode').value || 'combined';
+    if (mode === 'all') body.video_modes = ['text', 'diagrams', 'combined'];
+    else body.video_modes = [mode];
   }
   try {
     const data = await api('POST', `/api/stages/${stage}`, body);

@@ -21,7 +21,7 @@ try:
     params = json.loads(request_body) if request_body else {}
 except json.JSONDecodeError:
     params = {}
-video_modes = params.get("video_modes", ["text", "diagrams", "combined"])
+video_modes = params.get("video_modes", ["combined"])
 
 frames_ready = os.path.exists(frames_meta_path) or os.path.exists(frames_dir) or os.path.exists(legacy_frames_dir)
 for name, path in [("segments.json", segments_path), ("audio metadata", audio_meta_path),

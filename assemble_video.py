@@ -686,40 +686,52 @@ def assemble_video(
     create_concat_file(frame_sequence, concat_path)
 
     print("Step 3: Rendering raw visual tracks...")
+    requested_set = set(requested_modes)
+    has_diagram_frames = bool(diagram_frames)
+    need_text_raw = bool(requested_set & {"text", "combined"})
+    need_diagram_raw = ("diagrams" in requested_set) or ("combined" in requested_set and has_diagram_frames)
+    need_combined_overlay = ("combined" in requested_set) and has_diagram_frames
+
     raw_text_video = os.path.join(output_dir, "raw_video_text.mp4")
-    clip_plan_duration = _render_frame_sequence_video(
-        frame_sequence,
-        raw_text_video,
-        config,
-        transition_name="slideup",
-        use_transitions=True,
-    )
-    print(f"  Text track timeline: {clip_plan_duration:.1f}s")
+    clip_plan_duration = frame_sequence_duration
+    if need_text_raw:
+        clip_plan_duration = _render_frame_sequence_video(
+            frame_sequence,
+            raw_text_video,
+            config,
+            transition_name="slideup",
+            use_transitions=True,
+        )
+        print(f"  Text track timeline: {clip_plan_duration:.1f}s")
 
     raw_diagram_video = os.path.join(output_dir, "raw_video_diagrams.mp4")
-    blank_frame = os.path.join(output_dir, "diagram_blank.png")
-    _write_solid_image(
-        blank_frame,
-        config.video_width,
-        config.video_height,
-        tuple(int(DIAGRAM_KEY_COLOR_HEX[i:i+2], 16) for i in (1, 3, 5)),
-    )
-    diagram_sequence = build_diagram_frame_sequence(
-        diagram_frames or [],
-        segment_timings,
-        total_audio_duration,
-        blank_frame,
-    )
-    _render_frame_sequence_video(
-        diagram_sequence,
-        raw_diagram_video,
-        config,
-        transition_name="slideleft",
-        use_transitions=True,
-    )
+    if need_diagram_raw:
+        blank_frame = os.path.join(output_dir, "diagram_blank.png")
+        _write_solid_image(
+            blank_frame,
+            config.video_width,
+            config.video_height,
+            tuple(int(DIAGRAM_KEY_COLOR_HEX[i:i+2], 16) for i in (1, 3, 5)),
+        )
+        diagram_sequence = build_diagram_frame_sequence(
+            diagram_frames or [],
+            segment_timings,
+            total_audio_duration,
+            blank_frame,
+        )
+        _render_frame_sequence_video(
+            diagram_sequence,
+            raw_diagram_video,
+            config,
+            transition_name="slideleft",
+            use_transitions=True,
+        )
 
     raw_combined_video = os.path.join(output_dir, "raw_video_combined.mp4")
-    _render_overlay_video(raw_text_video, raw_diagram_video, raw_combined_video, DIAGRAM_KEY_COLOR_HEX)
+    if need_combined_overlay:
+        _render_overlay_video(raw_text_video, raw_diagram_video, raw_combined_video, DIAGRAM_KEY_COLOR_HEX)
+    elif "combined" in requested_set:
+        raw_combined_video = raw_text_video
 
     print("Step 4: Muxing videos with audio (+ captions)...")
     outputs: Dict[str, str] = {}
@@ -772,7 +784,16 @@ def assemble_video(
     with open(os.path.join(output_dir, "video_outputs.json"), "w") as f:
         json.dump(outputs, f, indent=2)
 
-    raw_video_duration = _probe_media_duration(raw_combined_video)
+    if os.path.exists(raw_combined_video):
+        raw_probe_source = raw_combined_video
+    elif os.path.exists(raw_text_video):
+        raw_probe_source = raw_text_video
+    elif os.path.exists(raw_diagram_video):
+        raw_probe_source = raw_diagram_video
+    else:
+        raw_probe_source = final_output
+
+    raw_video_duration = _probe_media_duration(raw_probe_source)
     final_video_duration = _probe_media_duration(final_output)
     sync_report = _build_sync_report(
         total_audio_duration,
