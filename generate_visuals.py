@@ -43,8 +43,11 @@ class DiagramTrackFrame:
     source_image_path: str
     source_url: str
     qr_image_path: Optional[str]
-    start_segment_index: int
-    stop_segment_index: int
+    start_segment_index: Optional[int] = None
+    stop_segment_index: Optional[int] = None
+    start_time_seconds: Optional[float] = None
+    stop_time_seconds: Optional[float] = None
+    line_number: int = 0
 
 
 def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -894,6 +897,9 @@ def generate_diagram_track_frames(
                 qr_image_path=qr_path,
                 start_segment_index=diagram.start_segment_index,
                 stop_segment_index=diagram.stop_segment_index,
+                start_time_seconds=diagram.start_time_seconds,
+                stop_time_seconds=diagram.stop_time_seconds,
+                line_number=diagram.line_number,
             )
         )
 

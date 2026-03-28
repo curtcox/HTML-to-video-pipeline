@@ -108,7 +108,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
   <div>
     <label for="diagram-specs">Diagram Specs (one per line)</label>
-    <textarea id="diagram-specs" placeholder="https://example.com/pictures/cats.png >> Let's talk about cats >> but enough about cats for now."></textarea>
+    <textarea id="diagram-specs" placeholder="https://example.com/pictures/cats.png >> Let's talk about cats >> but enough about cats for now.&#10;https://example.com/pictures/chart.png >> 00:45:25 >> 01:12:50"></textarea>
   </div>
   <div>
     <label for="tts-provider">TTS Provider</label>
@@ -335,8 +335,27 @@ async function runStage(stage) {
     if (mode === 'all') body.video_modes = ['text', 'diagrams', 'combined'];
     else body.video_modes = [mode];
   }
+
+  const runOnce = async (payload) => api('POST', `/api/stages/${stage}`, payload);
+
   try {
-    const data = await api('POST', `/api/stages/${stage}`, body);
+    let data = await runOnce(body);
+    if (
+      stage === 'parse' &&
+      data.error &&
+      data.error.includes('Overlapping diagram intervals detected') &&
+      !body.overlap_resolution
+    ) {
+      const autoFix = confirm(
+        'Diagram overlaps were detected. Auto-adjust start/stop ranges to remove overlap when possible?\n\n' +
+        'Note: diagrams with identical start and stop ranges must be changed manually.'
+      );
+      if (autoFix) {
+        addLog('parse overlap detected: attempting automatic overlap reduction...', 'warn');
+        data = await runOnce({ ...body, overlap_resolution: 'auto_shrink' });
+      }
+    }
+
     if (data.error) {
       setStageStatus(stage, 'Error', '');
       addLog(`${stage} error: ${data.error}`, 'err');

@@ -485,17 +485,33 @@ def build_diagram_frame_sequence(
 
     intervals: List[Dict] = []
     for frame in diagram_frames:
-        start_timing = segment_timings.get(frame.start_segment_index)
-        stop_timing = segment_timings.get(frame.stop_segment_index)
-        if not start_timing or not stop_timing:
+        start_time = _resolve_diagram_boundary_time(
+            frame.start_time_seconds,
+            frame.start_segment_index,
+            segment_timings,
+            boundary="start",
+            line_number=frame.line_number,
+        )
+        end_time = _resolve_diagram_boundary_time(
+            frame.stop_time_seconds,
+            frame.stop_segment_index,
+            segment_timings,
+            boundary="stop",
+            line_number=frame.line_number,
+        )
+        if start_time is None or end_time is None:
             continue
-        start_time = max(0.0, start_timing.start_time)
-        end_time = max(start_time, stop_timing.end_time)
+        start_time = max(0.0, start_time)
+        if end_time < start_time:
+            raise ValueError(
+                f"Diagram line {frame.line_number}: stop boundary resolves before start boundary."
+            )
         intervals.append(
             {
                 "file": os.path.abspath(frame.image_path),
                 "start": start_time,
                 "end": end_time,
+                "line_number": frame.line_number,
             }
         )
 
@@ -521,6 +537,25 @@ def build_diagram_frame_sequence(
         sequence.append({"file": blank_file, "duration": total_audio_duration - cursor})
 
     return sequence
+
+
+def _resolve_diagram_boundary_time(
+    explicit_seconds: Optional[float],
+    segment_index: Optional[int],
+    segment_timings: Dict[int, SegmentTiming],
+    boundary: str,
+    line_number: int,
+) -> Optional[float]:
+    if explicit_seconds is not None:
+        return explicit_seconds
+    if segment_index is None:
+        return None
+    timing = segment_timings.get(segment_index)
+    if not timing:
+        raise ValueError(
+            f"Diagram line {line_number}: could not resolve {boundary} segment index {segment_index}."
+        )
+    return timing.start_time if boundary == "start" else timing.end_time
 
 
 def _pause_after_segment(segment_type: str, config: PipelineConfig) -> float:

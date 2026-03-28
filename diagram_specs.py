@@ -9,11 +9,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, asdict
-from typing import List
+from typing import List, Tuple
 
 from parse_article import Segment
 
 DELIMITER = ">>"
+TIME_SELECTOR_RE = re.compile(r"^(\d+):([0-5]\d):([0-9]\d)$")
 
 
 @dataclass
@@ -32,8 +33,10 @@ class ResolvedDiagramSpec:
     start_phrase: str
     stop_phrase: str
     line_number: int
-    start_segment_index: int
-    stop_segment_index: int
+    start_segment_index: int | None = None
+    stop_segment_index: int | None = None
+    start_time_seconds: float | None = None
+    stop_time_seconds: float | None = None
 
 
 def _normalize_text(text: str) -> str:
@@ -85,29 +88,46 @@ def load_diagram_specs(path: str) -> List[DiagramSpec]:
 def resolve_diagram_specs(
     specs: List[DiagramSpec],
     segments: List[Segment],
+    allow_overlaps: bool = False,
 ) -> List[ResolvedDiagramSpec]:
     """
-    Resolve phrase-based rules onto segment indexes.
+    Resolve rules onto segment indexes and/or explicit timeline times.
 
-    The start phrase is matched against any segment text.
-    The stop phrase is matched at or after the start segment.
+    Selector behavior:
+    - If selector is exactly mm:ss:hh, treat it as a time.
+    - Otherwise, treat it as a text fragment to match.
     """
     resolved: List[ResolvedDiagramSpec] = []
     normalized_segment_text = [_normalize_text(seg.text) for seg in segments]
 
     for spec in specs:
-        start_idx = _find_phrase_index(normalized_segment_text, spec.start_phrase, start_from=0)
-        if start_idx is None:
-            raise ValueError(
-                f"Diagram spec line {spec.line_number}: "
-                f"start phrase not found: {spec.start_phrase!r}"
-            )
+        start_time = _parse_time_selector(spec.start_phrase)
+        stop_time = _parse_time_selector(spec.stop_phrase)
 
-        stop_idx = _find_phrase_index(normalized_segment_text, spec.stop_phrase, start_from=start_idx)
-        if stop_idx is None:
+        start_idx: int | None = None
+        stop_idx: int | None = None
+
+        if start_time is None:
+            start_idx = _find_phrase_index(normalized_segment_text, spec.start_phrase, start_from=0)
+            if start_idx is None:
+                raise ValueError(
+                    f"Diagram spec line {spec.line_number}: "
+                    f"start phrase not found: {spec.start_phrase!r}"
+                )
+
+        if stop_time is None:
+            stop_search_from = start_idx if start_idx is not None else 0
+            stop_idx = _find_phrase_index(normalized_segment_text, spec.stop_phrase, start_from=stop_search_from)
+            if stop_idx is None:
+                raise ValueError(
+                    f"Diagram spec line {spec.line_number}: "
+                    f"stop phrase not found after start phrase: {spec.stop_phrase!r}"
+                )
+
+        if start_time is not None and stop_time is not None and stop_time < start_time:
             raise ValueError(
-                f"Diagram spec line {spec.line_number}: "
-                f"stop phrase not found after start phrase: {spec.stop_phrase!r}"
+                f"Diagram spec line {spec.line_number}: stop time {spec.stop_phrase!r} "
+                f"is before start time {spec.start_phrase!r}"
             )
 
         resolved.append(
@@ -118,10 +138,288 @@ def resolve_diagram_specs(
                 line_number=spec.line_number,
                 start_segment_index=start_idx,
                 stop_segment_index=stop_idx,
+                start_time_seconds=start_time,
+                stop_time_seconds=stop_time,
             )
         )
 
+    if not allow_overlaps:
+        _raise_if_overlapping_resolved_diagrams(resolved)
     return resolved
+
+
+def _raise_if_overlapping_resolved_diagrams(resolved_specs: List[ResolvedDiagramSpec]) -> None:
+    """Fail fast when diagram display intervals overlap."""
+    overlaps = _find_overlapping_pairs(resolved_specs)
+    if not overlaps:
+        return
+    raise ValueError(overlap_error_message(overlaps))
+
+
+def overlap_error_message(
+    overlaps: List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]],
+    manual_required_pairs: List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]] | None = None,
+) -> str:
+    """Render a detailed overlap error with line/range/url context."""
+    if not overlaps:
+        return ""
+
+    details = []
+    for left, right in overlaps:
+        details.append(
+            (
+                f"line {left.line_number} "
+                f"[{_range_label(left)}] "
+                f"url={left.image_url!r} overlaps line {right.line_number} "
+                f"[{_range_label(right)}] "
+                f"url={right.image_url!r}"
+            )
+        )
+
+    message = (
+        "Overlapping diagram intervals detected. "
+        "Please adjust start/stop phrase ranges so they do not overlap. "
+        "Details: " + "; ".join(details)
+    )
+    if manual_required_pairs:
+        manual_details = []
+        for left, right in manual_required_pairs:
+            manual_details.append(
+                (
+                    f"line {left.line_number} and line {right.line_number} share identical "
+                    f"start/stop ranges [{_range_label(left)}]"
+                )
+            )
+        message += (
+            ". Manual changes required for identical start/stop ranges: "
+            + "; ".join(manual_details)
+        )
+    return message
+
+
+def find_overlapping_resolved_diagrams(
+    resolved_specs: List[ResolvedDiagramSpec],
+) -> List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]]:
+    """Public overlap detector for parse-stage validation/auto-fix prompts."""
+    return _find_overlapping_pairs(resolved_specs)
+
+
+def auto_adjust_overlapping_resolved_diagrams(
+    resolved_specs: List[ResolvedDiagramSpec],
+) -> tuple[
+    List[ResolvedDiagramSpec],
+    List[dict],
+    List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]],
+]:
+    """
+    Shrink overlapping ranges by moving earlier stop and later start inward.
+
+    Returns:
+      - adjusted resolved specs (same order as input)
+      - adjustment records for UI/logging
+      - remaining overlaps that could not be auto-fixed
+    """
+    adjusted = [ResolvedDiagramSpec(**asdict(spec)) for spec in resolved_specs]
+    adjustments: List[dict] = []
+    manual_required: List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]] = []
+
+    for domain in ("segment", "time"):
+        ordered = sorted(
+            [spec for spec in adjusted if _interval_domain(spec) == domain],
+            key=lambda spec: (
+                _interval_start_units(spec, domain),
+                _interval_end_units(spec, domain),
+                spec.line_number,
+            ),
+        )
+        for i in range(1, len(ordered)):
+            left = ordered[i - 1]
+            right = ordered[i]
+            left_start = _interval_start_units(left, domain)
+            left_end = _interval_end_units(left, domain)
+            right_start = _interval_start_units(right, domain)
+            right_end = _interval_end_units(right, domain)
+            if not _intervals_overlap(domain, left_start, left_end, right_start, right_end):
+                continue
+
+            if left_start == right_start and left_end == right_end:
+                manual_required.append((left, right))
+                continue
+
+            overlap_len = _overlap_units(domain, left_end, right_start)
+            left_room = left_end - left_start
+            right_room = right_end - right_start
+
+            move_left = min(left_room, (overlap_len + 1) // 2)
+            move_right = min(right_room, overlap_len - move_left)
+            remaining = overlap_len - (move_left + move_right)
+            if remaining > 0:
+                extra_left = min(left_room - move_left, remaining)
+                move_left += extra_left
+                remaining -= extra_left
+            if remaining > 0:
+                extra_right = min(right_room - move_right, remaining)
+                move_right += extra_right
+                remaining -= extra_right
+            if remaining > 0:
+                manual_required.append((left, right))
+                continue
+
+            _set_interval_end_units(left, domain, left_end - move_left)
+            _set_interval_start_units(right, domain, right_start + move_right)
+
+            adjustments.append(
+                {
+                    "domain": domain,
+                    "left_line": left.line_number,
+                    "right_line": right.line_number,
+                    "left_stop_before": _format_units(domain, left_end),
+                    "left_stop_after": _format_units(domain, _interval_end_units(left, domain)),
+                    "right_start_before": _format_units(domain, right_start),
+                    "right_start_after": _format_units(domain, _interval_start_units(right, domain)),
+                }
+            )
+
+    remaining_overlaps = _find_overlapping_pairs(adjusted)
+    manual_required_unique = _dedupe_overlap_pairs(manual_required + remaining_overlaps)
+    return adjusted, adjustments, manual_required_unique
+
+
+def _find_overlapping_pairs(
+    resolved_specs: List[ResolvedDiagramSpec],
+) -> List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]]:
+    """Return all overlapping pairs by segment index (inclusive ranges)."""
+    overlaps: List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]] = []
+    for domain in ("segment", "time"):
+        ordered = sorted(
+            [spec for spec in resolved_specs if _interval_domain(spec) == domain],
+            key=lambda spec: (
+                _interval_start_units(spec, domain),
+                _interval_end_units(spec, domain),
+                spec.line_number,
+            ),
+        )
+        for i, left in enumerate(ordered):
+            left_start = _interval_start_units(left, domain)
+            left_end = _interval_end_units(left, domain)
+            for right in ordered[i + 1:]:
+                right_start = _interval_start_units(right, domain)
+                right_end = _interval_end_units(right, domain)
+                if not _intervals_can_still_overlap(domain, left_end, right_start):
+                    break
+                if _intervals_overlap(domain, left_start, left_end, right_start, right_end):
+                    overlaps.append((left, right))
+    return overlaps
+
+
+def _dedupe_overlap_pairs(
+    pairs: List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]],
+) -> List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]]:
+    deduped: List[Tuple[ResolvedDiagramSpec, ResolvedDiagramSpec]] = []
+    seen = set()
+    for left, right in pairs:
+        key = (left.line_number, right.line_number)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((left, right))
+    return deduped
+
+
+def _parse_time_selector(value: str) -> float | None:
+    value = value.strip()
+    match = TIME_SELECTOR_RE.fullmatch(value)
+    if not match:
+        return None
+    minutes = int(match.group(1))
+    seconds = int(match.group(2))
+    hundredths = int(match.group(3))
+    return minutes * 60 + seconds + (hundredths / 100.0)
+
+
+def _format_seconds_mm_ss_hh(seconds: float) -> str:
+    total_hundredths = int(round(seconds * 100))
+    minutes = total_hundredths // 6000
+    remainder = total_hundredths % 6000
+    secs = remainder // 100
+    hundredths = remainder % 100
+    return f"{minutes:02d}:{secs:02d}:{hundredths:02d}"
+
+
+def _range_label(spec: ResolvedDiagramSpec) -> str:
+    domain = _interval_domain(spec)
+    if domain == "segment":
+        return f"segments {spec.start_segment_index}-{spec.stop_segment_index}"
+    if domain == "time":
+        return (
+            f"time {_format_seconds_mm_ss_hh(spec.start_time_seconds or 0.0)}"
+            f"-{_format_seconds_mm_ss_hh(spec.stop_time_seconds or 0.0)}"
+        )
+    return "mixed selectors (time+text)"
+
+
+def _interval_domain(spec: ResolvedDiagramSpec) -> str | None:
+    if spec.start_segment_index is not None and spec.stop_segment_index is not None:
+        return "segment"
+    if spec.start_time_seconds is not None and spec.stop_time_seconds is not None:
+        return "time"
+    return None
+
+
+def _interval_start_units(spec: ResolvedDiagramSpec, domain: str) -> int:
+    if domain == "segment":
+        return int(spec.start_segment_index or 0)
+    return int(round((spec.start_time_seconds or 0.0) * 100))
+
+
+def _interval_end_units(spec: ResolvedDiagramSpec, domain: str) -> int:
+    if domain == "segment":
+        return int(spec.stop_segment_index or 0)
+    return int(round((spec.stop_time_seconds or 0.0) * 100))
+
+
+def _set_interval_start_units(spec: ResolvedDiagramSpec, domain: str, value: int) -> None:
+    if domain == "segment":
+        spec.start_segment_index = value
+    else:
+        spec.start_time_seconds = value / 100.0
+
+
+def _set_interval_end_units(spec: ResolvedDiagramSpec, domain: str, value: int) -> None:
+    if domain == "segment":
+        spec.stop_segment_index = value
+    else:
+        spec.stop_time_seconds = value / 100.0
+
+
+def _intervals_overlap(
+    domain: str,
+    left_start: int,
+    left_end: int,
+    right_start: int,
+    right_end: int,
+) -> bool:
+    if domain == "segment":
+        return right_start <= left_end
+    return right_start < left_end
+
+
+def _intervals_can_still_overlap(domain: str, left_end: int, right_start: int) -> bool:
+    if domain == "segment":
+        return right_start <= left_end
+    return right_start < left_end
+
+
+def _overlap_units(domain: str, left_end: int, right_start: int) -> int:
+    if domain == "segment":
+        return left_end - right_start + 1
+    return left_end - right_start
+
+
+def _format_units(domain: str, value: int) -> str:
+    if domain == "segment":
+        return str(value)
+    return _format_seconds_mm_ss_hh(value / 100.0)
 
 
 def _find_phrase_index(
