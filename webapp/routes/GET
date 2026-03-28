@@ -52,6 +52,7 @@ HTML = r"""<!DOCTYPE html>
   .log { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.75rem; font-family: monospace; font-size: 0.8rem; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
   .log .ok { color: var(--success); }
   .log .err { color: var(--error); }
+  .log .warn { color: var(--warn); }
   .log .info { color: var(--accent); }
   .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; cursor: pointer; padding: 2rem; }
   .lightbox.open { display: flex; }
@@ -295,21 +296,28 @@ async function runStage(stage) {
     if (data.error) {
       setStageStatus(stage, 'Error', '');
       addLog(`${stage} error: ${data.error}`, 'err');
+      return false;
     } else {
       const info = Object.entries(data).filter(([k]) => k !== 'status').map(([k,v]) => `${k}=${v}`).join(', ');
       setStageStatus(stage, 'Done', 'done');
       addLog(`${stage} complete: ${info}`, 'ok');
       refreshOutputs();
+      return true;
     }
   } catch (e) {
     setStageStatus(stage, 'Error', '');
     addLog(`${stage} failed: ${e.message}`, 'err');
+    return false;
   }
 }
 
 async function runAll() {
   for (const s of ['parse', 'qr', 'visuals', 'audio', 'captions', 'assemble']) {
-    await runStage(s);
+    const ok = await runStage(s);
+    if (!ok) {
+      addLog(`Run stopped after ${s} failed.`, 'warn');
+      break;
+    }
   }
 }
 

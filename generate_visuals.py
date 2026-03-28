@@ -7,17 +7,25 @@ plus diagram overlay frames for a separate horizontal track.
 import os
 import textwrap
 import hashlib
+import subprocess
+import tempfile
+import time
 from io import BytesIO
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from dataclasses import dataclass
 
 from config import PipelineConfig
 from diagram_specs import ResolvedDiagramSpec
 from parse_article import Segment
+
+
+WIKIMEDIA_MIN_REQUEST_GAP_SECONDS = 1.0
+WIKIMEDIA_THUMB_WIDTH = 1280
+_LAST_WIKIMEDIA_REQUEST_TS = 0.0
 
 
 @dataclass
@@ -509,20 +517,306 @@ def _download_diagram_source_image(
         return out_path
 
     if os.path.isfile(image_url):
-        Image.open(image_url).convert("RGBA").save(out_path)
-        return out_path
+        with open(image_url, "rb") as f:
+            local_bytes = f.read()
+        if _try_decode_image_bytes(local_bytes, out_path):
+            return out_path
+        if _is_svg_payload(local_bytes, "image/svg+xml", image_url):
+            if _try_decode_svg_bytes(local_bytes, out_path, image_url, image_url):
+                return out_path
+        raise ValueError(f"Local image path is not decodable: {image_url!r}")
 
-    parsed = urlparse(image_url)
+    request_url = _preferred_download_url(image_url)
+    parsed = urlparse(request_url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(
             f"Unsupported diagram image reference: {image_url!r}. "
             "Use an http(s) URL or a local file path."
         )
 
-    resp = requests.get(image_url, timeout=30)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        # Prefer widely supported image types for Pillow decode.
+        "Accept": "image/png,image/jpeg,image/jpg,image/gif,image/*,*/*;q=0.8",
+    }
+    _throttle_wikimedia_request(request_url)
+    resp = _request_with_retries(request_url, headers=headers)
+    if resp.status_code == 403 and "wikimedia.org" in parsed.netloc:
+        # Wikimedia can reject generic script requests; retry as browser navigation.
+        retry_headers = dict(headers)
+        retry_headers["Referer"] = "https://commons.wikimedia.org/"
+        _throttle_wikimedia_request(request_url)
+        resp = _request_with_retries(request_url, headers=retry_headers)
     resp.raise_for_status()
-    Image.open(BytesIO(resp.content)).convert("RGBA").save(out_path)
-    return out_path
+    if _try_decode_image_bytes(resp.content, out_path):
+        return out_path
+    if _is_svg_payload(resp.content, resp.headers.get("content-type", ""), resp.url):
+        if _try_decode_svg_bytes(resp.content, out_path, image_url, resp.url):
+            return out_path
+
+    # Fallback: curl often succeeds on hosts that gate Python HTTP clients.
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        curl_cmd = [
+            "curl",
+            "-L",
+            "--silent",
+            "--show-error",
+            "--fail",
+            "-A",
+            headers["User-Agent"],
+            "-H",
+            f"Accept: {headers['Accept']}",
+            request_url,
+            "-o",
+            tmp_path,
+        ]
+        curl_proc = subprocess.run(curl_cmd, capture_output=True, text=True)
+        if curl_proc.returncode == 0:
+            with open(tmp_path, "rb") as f:
+                curl_bytes = f.read()
+            if _try_decode_image_bytes(curl_bytes, out_path):
+                return out_path
+            if _is_svg_payload(curl_bytes, "image/svg+xml", image_url):
+                if _try_decode_svg_bytes(curl_bytes, out_path, image_url, image_url):
+                    return out_path
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    content_type = resp.headers.get("content-type", "")
+    svg_hint = ""
+    if _is_svg_payload(resp.content, content_type, resp.url):
+        svg_hint = (
+            " (SVG detected: install cairosvg or use an ffmpeg build with SVG decoder support.)"
+        )
+    raise ValueError(
+        "Downloaded bytes are not a decodable image. "
+        f"url={image_url!r} request_url={request_url!r} final_url={resp.url!r} status={resp.status_code} "
+        f"content_type={content_type!r}{svg_hint}"
+    )
+
+
+def _preferred_download_url(image_url: str) -> str:
+    """
+    Use Wikimedia thumbnail endpoint to reduce rate limiting and SVG issues.
+    """
+    parsed = urlparse(image_url)
+    host = (parsed.netloc or "").lower()
+    if host == "upload.wikimedia.org":
+        # Build direct thumbnail URL when we already have hashed commons path.
+        # /wikipedia/commons/<h1>/<h2>/<filename>
+        path_parts = [p for p in parsed.path.split("/") if p]
+        if len(path_parts) >= 5 and path_parts[0] == "wikipedia" and path_parts[1] == "commons":
+            h1 = path_parts[2]
+            h2 = path_parts[3]
+            filename = path_parts[-1]
+            thumb = (
+                "https://upload.wikimedia.org/wikipedia/commons/thumb/"
+                f"{h1}/{h2}/{filename}/{WIKIMEDIA_THUMB_WIDTH}px-{filename}"
+            )
+            if filename.lower().endswith(".svg"):
+                thumb += ".png"
+            return thumb
+
+    if host.endswith("wikimedia.org"):
+        filename = os.path.basename(parsed.path)
+        if filename:
+            return (
+                "https://commons.wikimedia.org/wiki/Special:FilePath/"
+                f"{filename}?width={WIKIMEDIA_THUMB_WIDTH}"
+            )
+    return image_url
+
+
+def _try_decode_svg_bytes(
+    raw: bytes,
+    out_path: str,
+    source_url: str,
+    final_url: str,
+) -> bool:
+    # Preferred path: direct SVG rasterization.
+    try:
+        import cairosvg
+        png_bytes = cairosvg.svg2png(bytestring=raw, output_width=2200)
+        return _try_decode_image_bytes(png_bytes, out_path)
+    except Exception:
+        pass
+
+    # Fallback: use ffmpeg SVG decoder if available.
+    if _try_rasterize_svg_with_ffmpeg(raw, out_path):
+        return True
+
+    # macOS fallback via Quick Look thumbnail service.
+    if _try_rasterize_svg_with_qlmanage(raw, out_path):
+        return True
+
+    # Wikimedia supports server-side SVG rasterization.
+    parsed = urlparse(final_url)
+    if "wikimedia.org" in parsed.netloc and parsed.path.lower().endswith(".svg"):
+        joiner = "&" if "?" in final_url else "?"
+        raster_url = f"{final_url}{joiner}width=2400"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/123.0.0.0 Safari/537.36"
+            ),
+            "Accept": "image/png,image/jpeg,image/jpg,image/gif,image/*,*/*;q=0.8",
+            "Referer": "https://commons.wikimedia.org/",
+        }
+        try:
+            raster_resp = requests.get(raster_url, timeout=45, allow_redirects=True, headers=headers)
+            raster_resp.raise_for_status()
+            if _try_decode_image_bytes(raster_resp.content, out_path):
+                return True
+        except Exception:
+            return False
+    return False
+
+
+def _try_rasterize_svg_with_ffmpeg(raw: bytes, out_path: str) -> bool:
+    with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as in_tmp:
+        in_tmp.write(raw)
+        in_path = in_tmp.name
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as out_tmp:
+        out_png_path = out_tmp.name
+    try:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            in_path,
+            "-frames:v",
+            "1",
+            out_png_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return False
+        with open(out_png_path, "rb") as f:
+            png_bytes = f.read()
+        return _try_decode_image_bytes(png_bytes, out_path)
+    finally:
+        if os.path.exists(in_path):
+            os.remove(in_path)
+        if os.path.exists(out_png_path):
+            os.remove(out_png_path)
+
+
+def _try_rasterize_svg_with_qlmanage(raw: bytes, out_path: str) -> bool:
+    with tempfile.TemporaryDirectory(prefix="svg-qlm-") as tmpdir:
+        svg_path = os.path.join(tmpdir, "source.svg")
+        with open(svg_path, "wb") as f:
+            f.write(raw)
+        cmd = [
+            "qlmanage",
+            "-t",
+            "-s",
+            "2200",
+            "-o",
+            tmpdir,
+            svg_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return False
+        candidates = [name for name in os.listdir(tmpdir) if name.endswith(".png")]
+        if not candidates:
+            return False
+        thumb_path = os.path.join(tmpdir, sorted(candidates)[0])
+        with open(thumb_path, "rb") as f:
+            png_bytes = f.read()
+        return _try_decode_image_bytes(png_bytes, out_path)
+
+
+def _is_svg_payload(raw: bytes, content_type: str, url: str) -> bool:
+    ct = (content_type or "").lower()
+    if "image/svg" in ct or "svg+xml" in ct:
+        return True
+    if urlparse(url).path.lower().endswith(".svg"):
+        return True
+    head = raw[:4000].lstrip().lower()
+    return head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head)
+
+
+def _request_with_retries(
+    url: str,
+    headers: Dict[str, str],
+    max_attempts: int = 5,
+) -> requests.Response:
+    last_resp: Optional[requests.Response] = None
+    for attempt in range(max_attempts):
+        resp = requests.get(url, timeout=45, allow_redirects=True, headers=headers)
+        last_resp = resp
+        if resp.status_code not in {429, 500, 502, 503, 504}:
+            return resp
+        if attempt < max_attempts - 1:
+            retry_after = 0.0
+            if "Retry-After" in resp.headers:
+                try:
+                    retry_after = float(resp.headers.get("Retry-After", "0") or 0)
+                except ValueError:
+                    retry_after = 0.0
+            # Back off aggressively for 429s.
+            delay = max(retry_after, 1.2 * (2 ** attempt))
+            time.sleep(delay)
+    assert last_resp is not None
+    return last_resp
+
+
+def _throttle_wikimedia_request(url: str):
+    global _LAST_WIKIMEDIA_REQUEST_TS
+    host = (urlparse(url).netloc or "").lower()
+    if not host.endswith("wikimedia.org"):
+        return
+    now = time.time()
+    delta = now - _LAST_WIKIMEDIA_REQUEST_TS
+    if delta < WIKIMEDIA_MIN_REQUEST_GAP_SECONDS:
+        time.sleep(WIKIMEDIA_MIN_REQUEST_GAP_SECONDS - delta)
+    _LAST_WIKIMEDIA_REQUEST_TS = time.time()
+
+
+def _try_decode_image_bytes(raw: bytes, out_path: str) -> bool:
+    if not raw:
+        return False
+    try:
+        Image.open(BytesIO(raw)).convert("RGBA").save(out_path)
+        return True
+    except UnidentifiedImageError:
+        return False
+    except OSError:
+        return False
+
+
+def can_rasterize_svg() -> bool:
+    """Return whether this runtime can rasterize SVG via cairosvg or ffmpeg."""
+    try:
+        import cairosvg  # noqa: F401
+        return True
+    except Exception:
+        pass
+
+    # Probe command-line rasterizers with a tiny in-memory SVG file.
+    tiny_svg = (
+        b"<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'>"
+        b"<rect width='4' height='4' fill='red'/>"
+        b"</svg>"
+    )
+    with tempfile.TemporaryDirectory(prefix="svg-cap-") as tmpdir:
+        out_path = os.path.join(tmpdir, "probe.png")
+        if _try_rasterize_svg_with_ffmpeg(tiny_svg, out_path):
+            return True
+        if _try_rasterize_svg_with_qlmanage(tiny_svg, out_path):
+            return True
+    return False
 
 
 def create_diagram_overlay_frame(
@@ -539,87 +833,31 @@ def create_diagram_overlay_frame(
     """
     key_bg = diagram_key_color_rgb()
     img = Image.new("RGB", (config.video_width, config.video_height), key_bg)
-    draw = ImageDraw.Draw(img)
 
     W, H = config.video_width, config.video_height
     M = config.margin
-    accent = hex_to_rgb(config.accent_color)
 
-    # Main image panel
-    panel_x1 = M
-    panel_y1 = M
-    panel_x2 = int(W * 0.74)
-    panel_y2 = H - M
-    draw.rounded_rectangle(
-        [(panel_x1, panel_y1), (panel_x2, panel_y2)],
-        radius=22,
-        fill=(12, 12, 18),
-        outline=accent,
-        width=4,
-    )
-
-    # Right QR panel
-    qr_panel_x1 = panel_x2 + 24
-    qr_panel_y1 = panel_y1
-    qr_panel_x2 = W - M
-    qr_panel_y2 = panel_y2
-    draw.rounded_rectangle(
-        [(qr_panel_x1, qr_panel_y1), (qr_panel_x2, qr_panel_y2)],
-        radius=22,
-        fill=(18, 24, 34),
-        outline=accent,
-        width=3,
-    )
-
+    # Diagram image (left)
     src_img = Image.open(source_image_path).convert("RGBA")
-    image_padding = 26
-    box = (
-        panel_x1 + image_padding,
-        panel_y1 + image_padding,
-        panel_x2 - image_padding,
-        panel_y2 - image_padding,
+    diagram_box = (
+        M,
+        M,
+        int(W * 0.76),
+        H - M,
     )
-    fitted = ImageOps.contain(src_img, (box[2] - box[0], box[3] - box[1]))
-    fit_x = box[0] + ((box[2] - box[0]) - fitted.size[0]) // 2
-    fit_y = box[1] + ((box[3] - box[1]) - fitted.size[1]) // 2
-    img.paste(fitted, (fit_x, fit_y), fitted)
+    diagram_fit = ImageOps.contain(src_img, (diagram_box[2] - diagram_box[0], diagram_box[3] - diagram_box[1]))
+    diagram_x = diagram_box[0] + ((diagram_box[2] - diagram_box[0]) - diagram_fit.size[0]) // 2
+    diagram_y = diagram_box[1] + ((diagram_box[3] - diagram_box[1]) - diagram_fit.size[1]) // 2
+    img.paste(diagram_fit, (diagram_x, diagram_y), diagram_fit)
 
-    draw.text(
-        (qr_panel_x1 + 24, qr_panel_y1 + 20),
-        "Scan Diagram URL",
-        fill=hex_to_rgb(config.heading_color),
-        font=get_font(32, bold=True),
-    )
-
-    qr_size = min(config.qr_size, 260)
-    qr_y = qr_panel_y1 + 86
+    # Diagram URL QR (right)
+    qr_size = min(config.qr_size, 300)
     if qr_image_path and os.path.exists(qr_image_path):
         qr_img = Image.open(qr_image_path).convert("RGBA")
         qr_img = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
-        qr_x = qr_panel_x1 + ((qr_panel_x2 - qr_panel_x1) - qr_size) // 2
+        qr_x = W - M - qr_size
+        qr_y = H - M - qr_size
         img.paste(qr_img, (qr_x, qr_y), qr_img)
-    else:
-        draw.rectangle(
-            [(qr_panel_x1 + 36, qr_y), (qr_panel_x2 - 36, qr_y + qr_size)],
-            outline=(255, 255, 255),
-            width=2,
-        )
-        draw.text(
-            (qr_panel_x1 + 52, qr_y + qr_size // 2 - 16),
-            "QR unavailable",
-            fill=(255, 255, 255),
-            font=get_font(28),
-        )
-
-    text_y = qr_y + qr_size + 26
-    for line in textwrap.wrap(source_url, width=28)[:7]:
-        draw.text(
-            (qr_panel_x1 + 24, text_y),
-            line,
-            fill=hex_to_rgb(config.text_color),
-            font=get_font(22),
-        )
-        text_y += 32
 
     img.save(output_path)
     return output_path
@@ -700,9 +938,13 @@ def generate_frames_for_segments(
             frames.append(VisualFrame(frame_path, 0, i))  # duration set by audio
 
         else:  # paragraph
-            # Text track is intentionally text-only.
+            # Include citation QR in the vertical track.
+            qr_path = None
+            if seg.citations:
+                first_url = seg.citations[0].url
+                qr_path = qr_map.get(first_url)
             create_text_frame(seg.text, seg.section_title, config, frame_path,
-                              qr_image_path=None)
+                              qr_image_path=qr_path)
             frames.append(VisualFrame(frame_path, 0, i))  # duration set by audio
 
     return frames

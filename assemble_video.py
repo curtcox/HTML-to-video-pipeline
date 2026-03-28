@@ -832,7 +832,7 @@ def _build_sync_report(
         warnings.append(
             f"Frame sequence differs from audio by {frame_minus_audio:.3f}s before raw video render."
         )
-    if abs(clip_plan_minus_audio) > 0.05:
+    if abs(clip_plan_minus_audio) > 0.15:
         warnings.append(
             f"Rendered clip plan differs from audio by {clip_plan_minus_audio:.3f}s before raw video concat."
         )

@@ -37,7 +37,10 @@ class ResolvedDiagramSpec:
 
 
 def _normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip().lower()
+    """Lowercase and normalize punctuation/whitespace for fuzzy matching."""
+    text = text.replace("…", "...").lower()
+    text = re.sub(r"[^a-z0-9.]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def parse_diagram_specs_text(text: str) -> List[DiagramSpec]:
@@ -93,16 +96,14 @@ def resolve_diagram_specs(
     normalized_segment_text = [_normalize_text(seg.text) for seg in segments]
 
     for spec in specs:
-        start_key = _normalize_text(spec.start_phrase)
-        stop_key = _normalize_text(spec.stop_phrase)
-        start_idx = _find_phrase_index(normalized_segment_text, start_key, start_from=0)
+        start_idx = _find_phrase_index(normalized_segment_text, spec.start_phrase, start_from=0)
         if start_idx is None:
             raise ValueError(
                 f"Diagram spec line {spec.line_number}: "
                 f"start phrase not found: {spec.start_phrase!r}"
             )
 
-        stop_idx = _find_phrase_index(normalized_segment_text, stop_key, start_from=start_idx)
+        stop_idx = _find_phrase_index(normalized_segment_text, spec.stop_phrase, start_from=start_idx)
         if stop_idx is None:
             raise ValueError(
                 f"Diagram spec line {spec.line_number}: "
@@ -125,13 +126,35 @@ def resolve_diagram_specs(
 
 def _find_phrase_index(
     normalized_segments: List[str],
-    normalized_phrase: str,
+    phrase: str,
     start_from: int,
 ) -> int | None:
+    normalized_phrase = _normalize_text(phrase)
+    raw_phrase = phrase.replace("…", "...")
+    parts = [_normalize_text(part) for part in raw_phrase.split("...")]
+    parts = [part for part in parts if part]
+
     for idx in range(start_from, len(normalized_segments)):
-        if normalized_phrase in normalized_segments[idx]:
+        if _phrase_matches(normalized_segments[idx], normalized_phrase, parts):
             return idx
     return None
+
+
+def _phrase_matches(
+    normalized_segment: str,
+    normalized_phrase: str,
+    wildcard_parts: List[str],
+) -> bool:
+    if "..." not in normalized_phrase:
+        return normalized_phrase in normalized_segment
+
+    cursor = 0
+    for part in wildcard_parts:
+        found = normalized_segment.find(part, cursor)
+        if found < 0:
+            return False
+        cursor = found + len(part)
+    return True
 
 
 def resolved_specs_to_json(resolved_specs: List[ResolvedDiagramSpec]) -> str:

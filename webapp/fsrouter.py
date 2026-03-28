@@ -136,6 +136,14 @@ class Handler(BaseHTTPRequestHandler):
 
         return self.write_cgi_response(raw, exit_code)
 
+    def _safe_write_body(self, body: bytes) -> bool:
+        try:
+            self.wfile.write(body)
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected while streaming response; avoid noisy tracebacks.
+            return False
+
     def serve_static(self, handler_path: Path) -> int:
         try:
             data = handler_path.read_bytes()
@@ -149,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(data)
+            self._safe_write_body(data)
         return 200
 
     def write_cgi_response(self, raw: bytes, exit_code: int) -> int:
@@ -170,7 +178,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            self._safe_write_body(body)
         return status
 
     def write_json(self, status: int, payload: dict) -> None:
@@ -180,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            self._safe_write_body(body)
 
     def log_message(self, fmt: str, *args):
         sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), fmt % args))
