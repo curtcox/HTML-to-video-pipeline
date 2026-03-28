@@ -209,30 +209,77 @@ def _render_frame_clip(
     frame_count: int,
     output_path: str,
     config: PipelineConfig,
+    scroll_direction: Optional[str] = None,
+    scroll_background_hex: Optional[str] = None,
 ) -> float:
-    """Render one still image into a short video clip with an exact frame count."""
+    """Render one image into a short clip with exact frame count.
+
+    When scroll_direction is set ("vertical" or "horizontal"), the image moves
+    linearly across the viewport for the full clip duration.
+    """
     clip_duration = _frame_count_to_duration(frame_count, config.fps)
-    vf = (
+    scaled = (
         f"scale={config.video_width}:{config.video_height}:"
         f"force_original_aspect_ratio=decrease,"
         f"pad={config.video_width}:{config.video_height}:(ow-iw)/2:(oh-ih)/2"
     )
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", image_path,
-        "-frames:v", str(frame_count),
-        "-r", str(config.fps),
-        "-vf", vf,
-        "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-an",
-        output_path,
-    ]
+
+    if scroll_direction in {"vertical", "horizontal"} and frame_count > 1:
+        x_expr, y_expr = _scroll_overlay_position_expr(scroll_direction, frame_count)
+        bg_hex = (scroll_background_hex or config.background_color).replace("#", "0x")
+        filter_complex = (
+            f"[1:v]{scaled}[fg];"
+            f"[0:v][fg]overlay=x='{x_expr}':y='{y_expr}':shortest=1,format=yuv420p[v]"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i",
+            (
+                f"color=c={bg_hex}:s={config.video_width}x{config.video_height}:"
+                f"r={config.fps}:d={clip_duration}"
+            ),
+            "-loop", "1",
+            "-i", image_path,
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-frames:v", str(frame_count),
+            "-r", str(config.fps),
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            output_path,
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1",
+            "-i", image_path,
+            "-frames:v", str(frame_count),
+            "-r", str(config.fps),
+            "-vf", scaled,
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            output_path,
+        ]
+
     subprocess.run(cmd, capture_output=True, check=True)
     return clip_duration
+
+
+def _scroll_overlay_position_expr(scroll_direction: str, frame_count: int) -> tuple[str, str]:
+    """Return ffmpeg overlay x/y expressions for linear full-interval motion."""
+    denom = max(1, frame_count - 1)
+    if scroll_direction == "vertical":
+        return "0", f"H-((H+h)*n/{denom})"
+    if scroll_direction == "horizontal":
+        return f"W-((W+w)*n/{denom})", "0"
+    raise ValueError(f"Unsupported scroll direction: {scroll_direction}")
 
 
 def _render_transition_clip(
@@ -338,8 +385,13 @@ def _render_frame_sequence_video(
     debug_concat_path: Optional[str] = None,
     transition_name: str = "slideup",
     use_transitions: bool = True,
+    scroll_direction: Optional[str] = None,
+    scroll_background_hex: Optional[str] = None,
 ) -> float:
     """Render the visual timeline as concatenated hold and transition clips."""
+    if scroll_direction in {"vertical", "horizontal"}:
+        use_transitions = False
+
     with tempfile.TemporaryDirectory(prefix="frame-clips-", dir=os.path.dirname(raw_video_path)) as tmpdir:
         clip_entries: List[Dict] = []
         total_duration = 0.0
@@ -362,6 +414,8 @@ def _render_frame_sequence_video(
                     plan_entry.frame_count,
                     clip_path,
                     config,
+                    scroll_direction=scroll_direction,
+                    scroll_background_hex=scroll_background_hex,
                 )
             clip_entries.append({"file": os.path.abspath(clip_path), "duration": clip_duration})
             total_duration += clip_duration
@@ -699,8 +753,9 @@ def assemble_video(
             frame_sequence,
             raw_text_video,
             config,
-            transition_name="slideup",
-            use_transitions=True,
+            use_transitions=False,
+            scroll_direction="vertical",
+            scroll_background_hex=config.background_color,
         )
         print(f"  Text track timeline: {clip_plan_duration:.1f}s")
 
@@ -723,8 +778,9 @@ def assemble_video(
             diagram_sequence,
             raw_diagram_video,
             config,
-            transition_name="slideleft",
-            use_transitions=True,
+            use_transitions=False,
+            scroll_direction="horizontal",
+            scroll_background_hex=DIAGRAM_KEY_COLOR_HEX,
         )
 
     raw_combined_video = os.path.join(output_dir, "raw_video_combined.mp4")

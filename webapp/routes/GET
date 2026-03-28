@@ -40,6 +40,22 @@ HTML = r"""<!DOCTYPE html>
   .btn.danger { border-color: var(--error); color: var(--error); }
   .btn.danger:hover { background: var(--error); color: white; }
   .output-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1.5rem; }
+  .tab-strip { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
+  .tab-btn {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 9999px;
+    font-size: 0.82rem;
+    padding: 0.38rem 0.75rem;
+    cursor: pointer;
+  }
+  .tab-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .tab-btn.active { border-color: var(--accent); color: var(--accent); }
+  .tab-count { color: var(--accent); margin-left: 0.35rem; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .empty-note { color: #8b94ad; font-style: italic; }
   .warning-banner { display:none; background: rgba(255, 167, 38, 0.12); border: 1px solid var(--warn); color: #ffd18a; border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 1.5rem; }
   .warning-banner.open { display: block; }
   .output-header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
@@ -150,33 +166,51 @@ HTML = r"""<!DOCTYPE html>
   <div class="warning-banner" id="sync-warning"></div>
 
   <div class="output-section">
-    <div class="output-header"><h3>Frames</h3><span class="count" id="count-frames">0</span></div>
-    <div class="output-body"><div class="gallery" id="gallery-frames"></div></div>
-  </div>
-  <div class="output-section">
-    <div class="output-header"><h3>QR Codes</h3><span class="count" id="count-qr">0</span></div>
-    <div class="output-body"><div class="gallery" id="gallery-qr"></div></div>
-  </div>
-  <div class="output-section">
-    <div class="output-header"><h3>Audio</h3><span class="count" id="count-audio">0</span></div>
-    <div class="output-body" id="body-audio"></div>
-  </div>
-  <div class="output-section" id="section-video" style="display:none">
-    <div class="output-header"><h3>Video</h3><span class="count" id="count-video"></span></div>
+    <div class="output-header"><h3>Outputs</h3></div>
     <div class="output-body">
-      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap">
-        <label for="video-variant" style="color:var(--accent);font-size:0.85rem">Variant</label>
-        <select id="video-variant" onchange="selectVideoVariant()"></select>
+      <div class="tab-strip" role="tablist" aria-label="Output Types">
+        <button class="tab-btn active" id="tab-btn-frames" onclick="activateOutputTab('frames')">Frames <span class="tab-count" id="count-frames">0</span></button>
+        <button class="tab-btn" id="tab-btn-diagram-frames" onclick="activateOutputTab('diagram-frames')">Diagram Frames <span class="tab-count" id="count-diagram-frames">0</span></button>
+        <button class="tab-btn" id="tab-btn-qr" onclick="activateOutputTab('qr')">QR Codes <span class="tab-count" id="count-qr">0</span></button>
+        <button class="tab-btn" id="tab-btn-audio" onclick="activateOutputTab('audio')">Audio <span class="tab-count" id="count-audio">0</span></button>
+        <button class="tab-btn" id="tab-btn-video" onclick="activateOutputTab('video')">Video <span class="tab-count" id="count-video">0</span></button>
+        <button class="tab-btn" id="tab-btn-log" onclick="activateOutputTab('log')">Log</button>
       </div>
-      <video id="video-player" controls style="width:100%;max-height:600px;border-radius:4px;background:#000"></video>
-      <div style="margin-top:0.75rem">
-        <a id="video-download" class="btn" style="text-decoration:none;display:inline-block" download="video.mp4">Download MP4</a>
+
+      <div class="tab-panel active" id="panel-frames">
+        <div class="gallery" id="gallery-frames"></div>
+      </div>
+
+      <div class="tab-panel" id="panel-diagram-frames">
+        <div class="gallery" id="gallery-diagram-frames"></div>
+      </div>
+
+      <div class="tab-panel" id="panel-qr">
+        <div class="gallery" id="gallery-qr"></div>
+      </div>
+
+      <div class="tab-panel" id="panel-audio">
+        <div id="body-audio"></div>
+      </div>
+
+      <div class="tab-panel" id="panel-video">
+        <div id="body-video-empty" class="empty-note">No video output yet.</div>
+        <div id="body-video-player" style="display:none">
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap">
+            <label for="video-variant" style="color:var(--accent);font-size:0.85rem">Variant</label>
+            <select id="video-variant" onchange="selectVideoVariant()"></select>
+          </div>
+          <video id="video-player" controls style="width:100%;max-height:600px;border-radius:4px;background:#000"></video>
+          <div style="margin-top:0.75rem">
+            <a id="video-download" class="btn" style="text-decoration:none;display:inline-block" download="video.mp4">Download MP4</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="panel-log">
+        <div class="log" id="log"></div>
       </div>
     </div>
-  </div>
-  <div class="output-section">
-    <div class="output-header"><h3>Log</h3></div>
-    <div class="output-body"><div class="log" id="log"></div></div>
   </div>
 </main>
 
@@ -193,6 +227,16 @@ HTML = r"""<!DOCTYPE html>
 const log = document.getElementById('log');
 let audioNames = [];
 let videoVariants = {};
+
+function activateOutputTab(tabName) {
+  document.querySelectorAll('.tab-btn').forEach((btn) => btn.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.remove('active'));
+  const btn = document.getElementById(`tab-btn-${tabName}`);
+  const panel = document.getElementById(`panel-${tabName}`);
+  if (btn) btn.classList.add('active');
+  if (panel) panel.classList.add('active');
+}
+
 function addLog(msg, cls = 'info') {
   const ts = new Date().toLocaleTimeString();
   log.innerHTML += `<span class="${cls}">[${ts}] ${msg}</span>\n`;
@@ -338,10 +382,13 @@ async function refreshOutputs() {
       warningBox.classList.remove('open');
       warningBox.textContent = '';
     }
-    document.getElementById('count-frames').textContent = data.frames ? data.frames.length : 0;
+    const textFrames = data.frames || [];
+    const diagramFrames = data.diagram_frames || [];
+
+    document.getElementById('count-frames').textContent = textFrames.length;
     const gallery = document.getElementById('gallery-frames');
     gallery.innerHTML = '';
-    for (const frame of (data.frames || []).slice(0, 50)) {
+    for (const frame of textFrames.slice(0, 50)) {
       const imgData = await api('GET', `/api/outputs/frames?name=${encodeURIComponent(frame.name)}`);
       if (imgData.data) {
         const img = document.createElement('img');
@@ -351,6 +398,27 @@ async function refreshOutputs() {
         gallery.appendChild(img);
       }
     }
+    if (textFrames.length === 0) {
+      gallery.innerHTML = '<div class="empty-note">No text frames yet</div>';
+    }
+
+    document.getElementById('count-diagram-frames').textContent = diagramFrames.length;
+    const diagramGallery = document.getElementById('gallery-diagram-frames');
+    diagramGallery.innerHTML = '';
+    for (const frame of diagramFrames.slice(0, 50)) {
+      const imgData = await api('GET', `/api/outputs/frames?name=${encodeURIComponent(frame.name)}`);
+      if (imgData.data) {
+        const img = document.createElement('img');
+        img.src = `data:image/png;base64,${imgData.data}`;
+        img.title = frame.name;
+        img.onclick = (e) => { e.stopPropagation(); openFramePreview(img.src, frame.name); };
+        diagramGallery.appendChild(img);
+      }
+    }
+    if (diagramFrames.length === 0) {
+      diagramGallery.innerHTML = '<div class="empty-note">No diagram frames yet</div>';
+    }
+
     document.getElementById('count-qr').textContent = data.qr_codes ? data.qr_codes.length : 0;
     const qrGallery = document.getElementById('gallery-qr');
     qrGallery.innerHTML = '';
@@ -375,19 +443,26 @@ async function refreshOutputs() {
         qrGallery.appendChild(img);
       }
     }
+    if (!data.qr_codes || data.qr_codes.length === 0) {
+      qrGallery.innerHTML = '<div class="empty-note">No QR codes yet</div>';
+    }
+
     document.getElementById('count-audio').textContent = data.audio ? data.audio.length : 0;
     const audioBody = document.getElementById('body-audio');
     if (data.audio && data.audio.length > 0) {
       audioBody.innerHTML = data.audio.map(a => `<div style="margin-bottom:0.3rem">${a.name} (${(a.size/1024).toFixed(1)} KB)</div>`).join('');
     } else {
-      audioBody.innerHTML = '<span style="color:#666;font-style:italic">No audio files yet</span>';
+      audioBody.innerHTML = '<span class="empty-note">No audio files yet</span>';
     }
+
     // Video
-    const videoSection = document.getElementById('section-video');
+    const videoPlayerWrap = document.getElementById('body-video-player');
+    const videoEmpty = document.getElementById('body-video-empty');
     videoVariants = data.videos || {};
     const variantKeys = Object.keys(videoVariants);
     if (variantKeys.length > 0 || data.video) {
-      videoSection.style.display = '';
+      videoPlayerWrap.style.display = '';
+      videoEmpty.style.display = 'none';
       const selector = document.getElementById('video-variant');
       selector.innerHTML = '';
       if (variantKeys.length === 0 && data.video) {
@@ -401,9 +476,11 @@ async function refreshOutputs() {
       }
       if (selector.options.length > 0) selector.selectedIndex = 0;
       selectVideoVariant();
-      document.getElementById('count-video').textContent = `${Object.keys(videoVariants).length} variants`;
+      document.getElementById('count-video').textContent = `${Object.keys(videoVariants).length}`;
     } else {
-      videoSection.style.display = 'none';
+      videoPlayerWrap.style.display = 'none';
+      videoEmpty.style.display = '';
+      document.getElementById('count-video').textContent = '0';
     }
   } catch (e) {
     addLog(`Failed to refresh outputs: ${e.message}`, 'err');

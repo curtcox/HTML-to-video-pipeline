@@ -32,12 +32,14 @@ else:
     if os.path.exists(default_video):
         video_outputs = {"combined": default_video}
 
+text_frames = list_dir(os.path.join(output_dir, "frames", "text"), [".png"])
+if not text_frames:
+    text_frames = list_dir(os.path.join(output_dir, "frames"), [".png"])
+
 body = json.dumps({
     "segments": os.path.exists(os.path.join(output_dir, "segments.json")),
-    "frames": (
-        list_dir(os.path.join(output_dir, "frames", "text"), [".png"])
-        + list_dir(os.path.join(output_dir, "frames", "diagrams"), [".png"])
-    ),
+    "frames": text_frames,
+    "diagram_frames": list_dir(os.path.join(output_dir, "frames", "diagrams"), [".png"]),
     "qr_codes": list_dir(os.path.join(output_dir, "qr_codes"), [".png"]),
     "audio": list_dir(os.path.join(output_dir, "audio"), [".mp3", ".wav"]),
     "captions": os.path.exists(os.path.join(output_dir, "captions.srt")),
