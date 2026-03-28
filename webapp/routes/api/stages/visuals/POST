@@ -18,17 +18,22 @@ if not os.path.exists(segments_path):
 
 try:
     with redirect_stdout_to_stderr():
+        from diagram_specs import resolved_specs_from_json
         from config import PipelineConfig
         from parse_article import segments_from_json
-        from generate_visuals import generate_frames_for_segments
+        from generate_visuals import generate_frames_for_segments, generate_diagram_track_frames
 
         segments = segments_from_json(segments_path)
         config = PipelineConfig(output_dir=output_dir)
-        frames_dir = os.path.join(output_dir, "frames")
-        os.makedirs(frames_dir, exist_ok=True)
-        for name in os.listdir(frames_dir):
-            if name.endswith(".png"):
-                os.remove(os.path.join(frames_dir, name))
+        frames_root = os.path.join(output_dir, "frames")
+        text_frames_dir = os.path.join(frames_root, "text")
+        diagram_frames_dir = os.path.join(frames_root, "diagrams")
+        os.makedirs(text_frames_dir, exist_ok=True)
+        os.makedirs(diagram_frames_dir, exist_ok=True)
+        for directory in (text_frames_dir, diagram_frames_dir):
+            for name in os.listdir(directory):
+                if name.endswith(".png"):
+                    os.remove(os.path.join(directory, name))
 
         # Load qr_map if QR stage has run
         qr_map_path = os.path.join(output_dir, "qr_map.json")
@@ -38,13 +43,22 @@ try:
         else:
             qr_map = {}
 
-        # Signature: (segments, qr_map, config, output_dir)
-        frames = generate_frames_for_segments(segments, qr_map, config, frames_dir)
+        diagram_specs_path = os.path.join(output_dir, "diagram_specs.json")
+        if os.path.exists(diagram_specs_path):
+            resolved_diagrams = resolved_specs_from_json(diagram_specs_path)
+        else:
+            resolved_diagrams = []
+
+        frames = generate_frames_for_segments(segments, qr_map, config, text_frames_dir)
+        diagram_frames = generate_diagram_track_frames(resolved_diagrams, qr_map, config, diagram_frames_dir)
         with open(os.path.join(output_dir, "frames.json"), "w") as f:
             json.dump([asdict(frame) for frame in frames], f, indent=2)
+        with open(os.path.join(output_dir, "diagram_frames.json"), "w") as f:
+            json.dump([asdict(frame) for frame in diagram_frames], f, indent=2)
     body = json.dumps({
         "status": "ok",
-        "frame_count": len(frames),
+        "text_frame_count": len(frames),
+        "diagram_frame_count": len(diagram_frames),
     })
 except Exception as e:
     import traceback

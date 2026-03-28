@@ -1,6 +1,6 @@
 # HTML-to-Video Pipeline
 
-Converts HTML articles into YouTube-ready MP4 videos with word-for-word narration, synchronized captions, QR codes for every citation, and diagrams for key concepts.
+Converts HTML articles into narrated MP4 videos with synchronized captions, QR codes, and optional user-defined diagram overlays.
 
 ## Requirements
 
@@ -58,7 +58,7 @@ webapp/
         frames/GET, qr/GET, audio/GET, video/GET
 ```
 
-Run each pipeline stage individually, view generated frames/QR codes/audio, watch the assembled video, and clear outputs — all from the browser.
+Run each pipeline stage individually, view generated frames/QR codes/audio, watch the assembled videos, and clear outputs from the browser.
 
 ## CLI
 
@@ -67,13 +67,27 @@ source venv/bin/activate
 python pipeline.py https://example.com/article.html
 ```
 
-Options: `--dry-run`, `--output-dir`, `--segments-json`, `--voice-id`, `--width`, `--height`.
+Diagram rules can be supplied as multiline text or a file:
+
+```text
+https://example.com/pictures/cats.png >> Let's talk about cats >> but enough about cats for now.
+```
+
+CLI options include:
+- `--diagram-specs-file`
+- `--diagram-specs-text`
+- `--video-modes text,diagrams,combined`
+- plus existing options: `--dry-run`, `--output-dir`, `--segments-json`, `--voice-id`, `--width`, `--height`
 
 ## Pipeline Stages
 
 1. **Parse** — fetch HTML, extract text segments and citation URLs
-2. **QR Codes** — generate scannable QR codes for each citation
-3. **Visuals** — generate title cards, section cards, text frames, and diagrams
+2. **QR Codes** — generate scannable QR codes for citation URLs and diagram image URLs
+3. **Visuals** — generate text-track frames and separate diagram-track overlay frames
 4. **Audio** — text-to-speech for each segment
 5. **Captions** — generate SRT subtitle file from audio timing
-6. **Assemble** — combine frames + audio + captions into final MP4 via ffmpeg
+6. **Assemble** — render:
+   - `video_text.mp4` (vertical scrolling text track)
+   - `video_diagrams.mp4` (horizontal scrolling diagram track)
+   - `video_combined.mp4` (diagram overlay on text track)
+   - plus `video.mp4` as the default combined output

@@ -30,8 +30,9 @@ HTML = r"""<!DOCTYPE html>
   .stage-btn .status { font-size: 0.75rem; margin-top: 0.3rem; color: var(--accent); min-height: 1em; }
   .config-bar { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 2rem; display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; }
   .config-bar label { font-size: 0.8rem; color: var(--accent); display: block; margin-bottom: 0.25rem; }
-  .config-bar input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.85rem; width: 320px; }
-  .config-bar input:focus, .config-bar select:focus { outline: none; border-color: var(--accent); }
+  .config-bar input, .config-bar textarea { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.85rem; width: 320px; }
+  .config-bar textarea { min-height: 110px; resize: vertical; width: 560px; }
+  .config-bar input:focus, .config-bar textarea:focus, .config-bar select:focus { outline: none; border-color: var(--accent); }
   .config-bar select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }
   .actions { display: flex; gap: 0.5rem; margin-bottom: 2rem; }
   .btn { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: all 0.15s; }
@@ -84,13 +85,17 @@ HTML = r"""<!DOCTYPE html>
 
 <main>
   <div class="config-bar">
-    <div>
-      <label for="url-input">Article URL or path</label>
-      <input type="text" id="url-input" placeholder="https://... or /path/to/article.html">
-    </div>
-    <div>
-      <label for="tts-provider">TTS Provider</label>
-      <select id="tts-provider">
+  <div>
+    <label for="url-input">Article URL or path</label>
+    <input type="text" id="url-input" placeholder="https://... or /path/to/article.html">
+  </div>
+  <div>
+    <label for="diagram-specs">Diagram Specs (one per line)</label>
+    <textarea id="diagram-specs" placeholder="https://example.com/pictures/cats.png >> Let's talk about cats >> but enough about cats for now."></textarea>
+  </div>
+  <div>
+    <label for="tts-provider">TTS Provider</label>
+    <select id="tts-provider">
         <option value="say" selected>say (macOS built-in)</option>
         <option value="piper">Piper (local neural)</option>
         <option value="kokoro">Kokoro (local 82M)</option>
@@ -149,6 +154,10 @@ HTML = r"""<!DOCTYPE html>
   <div class="output-section" id="section-video" style="display:none">
     <div class="output-header"><h3>Video</h3><span class="count" id="count-video"></span></div>
     <div class="output-body">
+      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap">
+        <label for="video-variant" style="color:var(--accent);font-size:0.85rem">Variant</label>
+        <select id="video-variant" onchange="selectVideoVariant()"></select>
+      </div>
       <video id="video-player" controls style="width:100%;max-height:600px;border-radius:4px;background:#000"></video>
       <div style="margin-top:0.75rem">
         <a id="video-download" class="btn" style="text-decoration:none;display:inline-block" download="video.mp4">Download MP4</a>
@@ -173,6 +182,7 @@ HTML = r"""<!DOCTYPE html>
 <script>
 const log = document.getElementById('log');
 let audioNames = [];
+let videoVariants = {};
 function addLog(msg, cls = 'info') {
   const ts = new Date().toLocaleTimeString();
   log.innerHTML += `<span class="${cls}">[${ts}] ${msg}</span>\n`;
@@ -240,6 +250,19 @@ function openFramePreview(imageSrc, frameName) {
   lightbox.classList.add('open');
 }
 
+function selectVideoVariant() {
+  const selector = document.getElementById('video-variant');
+  const key = selector.value;
+  const filename = videoVariants[key];
+  if (!filename) return;
+  const url = `/api/outputs/video?name=${encodeURIComponent(filename)}`;
+  const player = document.getElementById('video-player');
+  const dl = document.getElementById('video-download');
+  player.src = url;
+  dl.href = url;
+  dl.download = filename;
+}
+
 async function runStage(stage) {
   setStageStatus(stage, 'Running...', 'running');
   addLog(`Starting ${stage}...`);
@@ -247,10 +270,14 @@ async function runStage(stage) {
   if (stage === 'parse') {
     const url = document.getElementById('url-input').value;
     if (url) body.url = url;
+    body.diagram_specs_text = document.getElementById('diagram-specs').value || '';
   }
   if (stage === 'audio') {
     body.dry_run = false;
     body.provider = document.getElementById('tts-provider').value;
+  }
+  if (stage === 'assemble') {
+    body.video_modes = ['text', 'diagrams', 'combined'];
   }
   try {
     const data = await api('POST', `/api/stages/${stage}`, body);
@@ -338,14 +365,24 @@ async function refreshOutputs() {
     }
     // Video
     const videoSection = document.getElementById('section-video');
-    if (data.video) {
+    videoVariants = data.videos || {};
+    const variantKeys = Object.keys(videoVariants);
+    if (variantKeys.length > 0 || data.video) {
       videoSection.style.display = '';
-      const player = document.getElementById('video-player');
-      const dl = document.getElementById('video-download');
-      const videoUrl = '/api/outputs/video';
-      player.src = videoUrl;
-      dl.href = videoUrl;
-      document.getElementById('count-video').textContent = 'Ready';
+      const selector = document.getElementById('video-variant');
+      selector.innerHTML = '';
+      if (variantKeys.length === 0 && data.video) {
+        videoVariants = { combined: 'video.mp4' };
+      }
+      for (const key of Object.keys(videoVariants)) {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = `${key} (${videoVariants[key]})`;
+        selector.appendChild(opt);
+      }
+      if (selector.options.length > 0) selector.selectedIndex = 0;
+      selectVideoVariant();
+      document.getElementById('count-video').textContent = `${Object.keys(videoVariants).length} variants`;
     } else {
       videoSection.style.display = 'none';
     }

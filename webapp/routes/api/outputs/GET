@@ -7,6 +7,7 @@ import sys
 root = os.environ["PIPELINE_ROOT"]
 output_dir = os.path.join(root, "output")
 sync_report_path = os.path.join(output_dir, "sync_report.json")
+video_outputs_path = os.path.join(output_dir, "video_outputs.json")
 
 def list_dir(path, extensions):
     if not os.path.isdir(path):
@@ -22,13 +23,30 @@ if os.path.exists(sync_report_path):
     with open(sync_report_path) as f:
         sync_report = json.load(f)
 
+video_outputs = {}
+if os.path.exists(video_outputs_path):
+    with open(video_outputs_path) as f:
+        video_outputs = json.load(f)
+else:
+    default_video = os.path.join(output_dir, "video.mp4")
+    if os.path.exists(default_video):
+        video_outputs = {"combined": default_video}
+
 body = json.dumps({
     "segments": os.path.exists(os.path.join(output_dir, "segments.json")),
-    "frames": list_dir(os.path.join(output_dir, "frames"), [".png"]),
+    "frames": (
+        list_dir(os.path.join(output_dir, "frames", "text"), [".png"])
+        + list_dir(os.path.join(output_dir, "frames", "diagrams"), [".png"])
+    ),
     "qr_codes": list_dir(os.path.join(output_dir, "qr_codes"), [".png"]),
     "audio": list_dir(os.path.join(output_dir, "audio"), [".mp3", ".wav"]),
     "captions": os.path.exists(os.path.join(output_dir, "captions.srt")),
     "video": os.path.exists(os.path.join(output_dir, "video.mp4")),
+    "videos": {
+        name: os.path.basename(path if os.path.isabs(path) else os.path.join(output_dir, path))
+        for name, path in video_outputs.items()
+        if os.path.exists(path if os.path.isabs(path) else os.path.join(output_dir, path))
+    },
     "sync_report": sync_report,
 })
 

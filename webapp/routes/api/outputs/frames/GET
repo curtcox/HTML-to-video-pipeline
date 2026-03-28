@@ -6,13 +6,23 @@ import os
 import sys
 
 root = os.environ["PIPELINE_ROOT"]
-frames_dir = os.path.join(root, "output", "frames")
+frames_root = os.path.join(root, "output", "frames")
+frame_dirs = [
+    os.path.join(frames_root, "text"),
+    os.path.join(frames_root, "diagrams"),
+    frames_root,  # backward compatibility
+]
 name = os.environ.get("QUERY_NAME", "")
 
 if name:
     safe_name = os.path.basename(name)
-    path = os.path.join(frames_dir, safe_name)
-    if not os.path.isfile(path):
+    path = ""
+    for directory in frame_dirs:
+        candidate = os.path.join(directory, safe_name)
+        if os.path.isfile(candidate):
+            path = candidate
+            break
+    if not path:
         sys.stdout.write("Status: 404\n\n")
         sys.stdout.write(json.dumps({"error": "frame not found"}))
         raise SystemExit(0)
@@ -22,9 +32,15 @@ if name:
     sys.stdout.write(json.dumps({"name": safe_name, "data": data, "mime": "image/png"}))
 else:
     frames = []
-    if os.path.isdir(frames_dir):
-        for f in sorted(os.listdir(frames_dir)):
-            if f.endswith(".png"):
-                frames.append({"name": f, "size": os.path.getsize(os.path.join(frames_dir, f))})
+    seen = set()
+    for directory in frame_dirs:
+        if os.path.isdir(directory):
+            for f in sorted(os.listdir(directory)):
+                if not f.endswith(".png"):
+                    continue
+                if f in seen:
+                    continue
+                seen.add(f)
+                frames.append({"name": f, "size": os.path.getsize(os.path.join(directory, f))})
     sys.stdout.write("\n")
     sys.stdout.write(json.dumps({"frames": frames}))

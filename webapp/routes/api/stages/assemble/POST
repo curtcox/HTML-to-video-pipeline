@@ -11,22 +11,36 @@ output_dir = os.path.join(root, "output")
 segments_path = os.path.join(output_dir, "segments.json")
 audio_meta_path = os.path.join(output_dir, "audio", "audio_metadata.json")
 frames_meta_path = os.path.join(output_dir, "frames.json")
+diagram_frames_meta_path = os.path.join(output_dir, "diagram_frames.json")
 srt_path = os.path.join(output_dir, "captions.srt")
-frames_dir = os.path.join(output_dir, "frames")
+frames_dir = os.path.join(output_dir, "frames", "text")
+legacy_frames_dir = os.path.join(output_dir, "frames")
 
+request_body = sys.stdin.buffer.read()
+try:
+    params = json.loads(request_body) if request_body else {}
+except json.JSONDecodeError:
+    params = {}
+video_modes = params.get("video_modes", ["text", "diagrams", "combined"])
+
+frames_ready = os.path.exists(frames_meta_path) or os.path.exists(frames_dir) or os.path.exists(legacy_frames_dir)
 for name, path in [("segments.json", segments_path), ("audio metadata", audio_meta_path),
-                    ("captions.srt", srt_path), ("frames", frames_dir)]:
+                    ("captions.srt", srt_path)]:
     if not os.path.exists(path):
         sys.stdout.write("Status: 400\n\n")
         sys.stdout.write(json.dumps({"error": f"Missing {name}. Run earlier stages first."}))
         raise SystemExit(0)
+if not frames_ready:
+    sys.stdout.write("Status: 400\n\n")
+    sys.stdout.write(json.dumps({"error": "Missing frames. Run visuals stage first."}))
+    raise SystemExit(0)
 
 try:
     with redirect_stdout_to_stderr():
         from config import PipelineConfig
         from assemble_video import assemble_video
         from generate_audio import AudioSegment
-        from generate_visuals import VisualFrame
+        from generate_visuals import VisualFrame, DiagramTrackFrame
 
         # Load audio metadata
         with open(audio_meta_path) as f:
@@ -39,7 +53,8 @@ try:
             visual_frames = [VisualFrame(**frame) for frame in frame_data]
         else:
             # Backward-compatible fallback for older outputs without frames.json.
-            frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
+            source_dir = frames_dir if os.path.isdir(frames_dir) else legacy_frames_dir
+            frame_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".png"))
             visual_frames = []
             for f in frame_files:
                 stem = os.path.splitext(f)[0]
@@ -52,17 +67,39 @@ try:
                 duration = 6.0 if f.startswith("diagram_") else 0.0
                 visual_frames.append(
                     VisualFrame(
-                        image_path=os.path.join(frames_dir, f),
+                        image_path=os.path.join(source_dir, f),
                         duration=duration,
                         segment_index=segment_index,
                     )
                 )
 
+        if os.path.exists(diagram_frames_meta_path):
+            with open(diagram_frames_meta_path) as f:
+                diagram_frame_data = json.load(f)
+            diagram_frames = [DiagramTrackFrame(**frame) for frame in diagram_frame_data]
+        else:
+            diagram_frames = []
+
         config = PipelineConfig(output_dir=output_dir)
-        video_path, sync_report = assemble_video(visual_frames, audio_segments, srt_path, config, output_dir)
+        video_path, sync_report = assemble_video(
+            visual_frames,
+            audio_segments,
+            srt_path,
+            config,
+            output_dir,
+            diagram_frames=diagram_frames,
+            video_modes=video_modes,
+        )
+        video_outputs_path = os.path.join(output_dir, "video_outputs.json")
+        if os.path.exists(video_outputs_path):
+            with open(video_outputs_path) as f:
+                video_outputs = json.load(f)
+        else:
+            video_outputs = {}
     body = json.dumps({
         "status": "ok",
         "video_path": video_path,
+        "video_outputs": video_outputs,
         "sync_warnings": len(sync_report.warnings),
     })
 except Exception as e:

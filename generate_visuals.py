@@ -1,16 +1,22 @@
 """
 Generate visual frames for each segment of the video.
 
-Creates section title cards, text frames with key phrases highlighted,
-and diagram frames for concepts that benefit from illustration.
+Creates section/title cards and text frames for the vertical text track,
+plus diagram overlay frames for a separate horizontal track.
 """
 import os
 import textwrap
+import hashlib
+from io import BytesIO
 from typing import List, Dict, Optional, Tuple
-from PIL import Image, ImageDraw, ImageFont
+from urllib.parse import urlparse
+
+import requests
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from dataclasses import dataclass
 
 from config import PipelineConfig
+from diagram_specs import ResolvedDiagramSpec
 from parse_article import Segment
 
 
@@ -20,6 +26,17 @@ class VisualFrame:
     image_path: str
     duration: float  # seconds this frame should display
     segment_index: int  # which segment it corresponds to
+
+
+@dataclass
+class DiagramTrackFrame:
+    """One diagram overlay bound to a segment range."""
+    image_path: str
+    source_image_path: str
+    source_url: str
+    qr_image_path: Optional[str]
+    start_segment_index: int
+    stop_segment_index: int
 
 
 def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -53,6 +70,14 @@ def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     """Convert hex color string to RGB tuple."""
     hex_color = hex_color.lstrip("#")
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+
+DIAGRAM_KEY_COLOR_HEX = "#00FF00"
+
+
+def diagram_key_color_rgb() -> Tuple[int, int, int]:
+    """Color keyed out when composing diagram track over the text track."""
+    return hex_to_rgb(DIAGRAM_KEY_COLOR_HEX)
 
 
 def create_title_card(
@@ -471,43 +496,170 @@ def create_diagram_frame(
     return output_path
 
 
-# Diagram definitions keyed by section title.
-# Each entry: (diagram_type, labels, diagram_title)
-SECTION_DIAGRAMS = {
-    "What hallucinations actually are": (
-        "flow",
-        ["Training Data\n(patterns)", "Statistical\nPrediction", "Next Word\nGeneration", "Output Text\n(may be false)"],
-        "How LLMs Generate Text"
-    ),
-    "The psychology: citations boost trust whether or not they\u2019re valid": (
-        "stats",
-        ["HIGH|Trust increases when\ncitations present (even random)",
-         "LOW|Trust only when users\nactually click & read",
-         "Gap|Between confidence\nand accuracy"],
-        "How Citations Affect User Trust"
-    ),
-    "How AI training creates the problem": (
-        "flow",
-        ["LLM generates\nmultiple responses", "Human raters\nrank them", "Reward model\nlearns preferences", "LLM optimized\nfor high scores"],
-        "The RLHF Training Loop"
-    ),
-    "The solutions exist \u2014 they\u2019re just not widely deployed": (
-        "comparison",
-        ["GopherCite (2022) | 80|80% accurate cited answers",
-         "Fine-grained NLI rewards | 90|Outperformed standard RLHF",
-         "RLVR (automated checks) | 85|Programmatic verification",
-         "CiteAudit / CiteLab | 75|Post-hoc audit tools"],
-        "Existing Citation Verification Approaches"
-    ),
-    "What will probably get better \u2014 and what probably won\u2019t": (
-        "comparison",
-        ["GPT-3.5 fabrication rate | 39.6|39.6%",
-         "GPT-4 fabrication rate | 28.6|28.6%",
-         "Custom RAG model | 15.8|3 of 19 questions",
-         "Legal AI tools | 25|17-33%"],
-        "Hallucination Rates Across Models"
-    ),
-}
+def _download_diagram_source_image(
+    image_url: str,
+    output_dir: str,
+    index: int,
+) -> str:
+    """Download/load a user diagram image and normalize it to PNG."""
+    os.makedirs(output_dir, exist_ok=True)
+    url_hash = hashlib.sha1(image_url.encode("utf-8")).hexdigest()[:12]
+    out_path = os.path.join(output_dir, f"diagram_source_{index:04d}_{url_hash}.png")
+    if os.path.exists(out_path):
+        return out_path
+
+    if os.path.isfile(image_url):
+        Image.open(image_url).convert("RGBA").save(out_path)
+        return out_path
+
+    parsed = urlparse(image_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            f"Unsupported diagram image reference: {image_url!r}. "
+            "Use an http(s) URL or a local file path."
+        )
+
+    resp = requests.get(image_url, timeout=30)
+    resp.raise_for_status()
+    Image.open(BytesIO(resp.content)).convert("RGBA").save(out_path)
+    return out_path
+
+
+def create_diagram_overlay_frame(
+    source_image_path: str,
+    source_url: str,
+    qr_image_path: Optional[str],
+    config: PipelineConfig,
+    output_path: str,
+) -> str:
+    """
+    Build one diagram track frame with a key-color background.
+
+    The key color can later be treated as transparent when overlaid.
+    """
+    key_bg = diagram_key_color_rgb()
+    img = Image.new("RGB", (config.video_width, config.video_height), key_bg)
+    draw = ImageDraw.Draw(img)
+
+    W, H = config.video_width, config.video_height
+    M = config.margin
+    accent = hex_to_rgb(config.accent_color)
+
+    # Main image panel
+    panel_x1 = M
+    panel_y1 = M
+    panel_x2 = int(W * 0.74)
+    panel_y2 = H - M
+    draw.rounded_rectangle(
+        [(panel_x1, panel_y1), (panel_x2, panel_y2)],
+        radius=22,
+        fill=(12, 12, 18),
+        outline=accent,
+        width=4,
+    )
+
+    # Right QR panel
+    qr_panel_x1 = panel_x2 + 24
+    qr_panel_y1 = panel_y1
+    qr_panel_x2 = W - M
+    qr_panel_y2 = panel_y2
+    draw.rounded_rectangle(
+        [(qr_panel_x1, qr_panel_y1), (qr_panel_x2, qr_panel_y2)],
+        radius=22,
+        fill=(18, 24, 34),
+        outline=accent,
+        width=3,
+    )
+
+    src_img = Image.open(source_image_path).convert("RGBA")
+    image_padding = 26
+    box = (
+        panel_x1 + image_padding,
+        panel_y1 + image_padding,
+        panel_x2 - image_padding,
+        panel_y2 - image_padding,
+    )
+    fitted = ImageOps.contain(src_img, (box[2] - box[0], box[3] - box[1]))
+    fit_x = box[0] + ((box[2] - box[0]) - fitted.size[0]) // 2
+    fit_y = box[1] + ((box[3] - box[1]) - fitted.size[1]) // 2
+    img.paste(fitted, (fit_x, fit_y), fitted)
+
+    draw.text(
+        (qr_panel_x1 + 24, qr_panel_y1 + 20),
+        "Scan Diagram URL",
+        fill=hex_to_rgb(config.heading_color),
+        font=get_font(32, bold=True),
+    )
+
+    qr_size = min(config.qr_size, 260)
+    qr_y = qr_panel_y1 + 86
+    if qr_image_path and os.path.exists(qr_image_path):
+        qr_img = Image.open(qr_image_path).convert("RGBA")
+        qr_img = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
+        qr_x = qr_panel_x1 + ((qr_panel_x2 - qr_panel_x1) - qr_size) // 2
+        img.paste(qr_img, (qr_x, qr_y), qr_img)
+    else:
+        draw.rectangle(
+            [(qr_panel_x1 + 36, qr_y), (qr_panel_x2 - 36, qr_y + qr_size)],
+            outline=(255, 255, 255),
+            width=2,
+        )
+        draw.text(
+            (qr_panel_x1 + 52, qr_y + qr_size // 2 - 16),
+            "QR unavailable",
+            fill=(255, 255, 255),
+            font=get_font(28),
+        )
+
+    text_y = qr_y + qr_size + 26
+    for line in textwrap.wrap(source_url, width=28)[:7]:
+        draw.text(
+            (qr_panel_x1 + 24, text_y),
+            line,
+            fill=hex_to_rgb(config.text_color),
+            font=get_font(22),
+        )
+        text_y += 32
+
+    img.save(output_path)
+    return output_path
+
+
+def generate_diagram_track_frames(
+    resolved_diagrams: List[ResolvedDiagramSpec],
+    qr_map: Dict[str, str],
+    config: PipelineConfig,
+    output_dir: str,
+) -> List[DiagramTrackFrame]:
+    """Create keyed diagram frames mapped to segment index ranges."""
+    os.makedirs(output_dir, exist_ok=True)
+    source_dir = os.path.join(output_dir, "diagram_sources")
+    os.makedirs(source_dir, exist_ok=True)
+
+    frames: List[DiagramTrackFrame] = []
+    for i, diagram in enumerate(resolved_diagrams):
+        source_image_path = _download_diagram_source_image(diagram.image_url, source_dir, i)
+        qr_path = qr_map.get(diagram.image_url)
+        frame_path = os.path.join(output_dir, f"diagram_overlay_{i:04d}.png")
+        create_diagram_overlay_frame(
+            source_image_path=source_image_path,
+            source_url=diagram.image_url,
+            qr_image_path=qr_path,
+            config=config,
+            output_path=frame_path,
+        )
+        frames.append(
+            DiagramTrackFrame(
+                image_path=frame_path,
+                source_image_path=source_image_path,
+                source_url=diagram.image_url,
+                qr_image_path=qr_path,
+                start_segment_index=diagram.start_segment_index,
+                stop_segment_index=diagram.stop_segment_index,
+            )
+        )
+
+    return frames
 
 
 def generate_frames_for_segments(
@@ -519,12 +671,11 @@ def generate_frames_for_segments(
     """
     Generate all visual frames for the video.
 
-    Returns ordered list of VisualFrame objects.
+    Returns ordered list of text-track VisualFrame objects.
     """
     os.makedirs(output_dir, exist_ok=True)
     frames: List[VisualFrame] = []
     total_sections = sum(1 for s in segments if s.segment_type == "heading")
-    seen_sections = set()
 
     for i, seg in enumerate(segments):
         frame_path = os.path.join(output_dir, f"frame_{i:04d}.png")
@@ -538,36 +689,20 @@ def generate_frames_for_segments(
             frames.append(VisualFrame(frame_path, 5.0, i))
 
         elif seg.segment_type == "heading":
-            # Section card
             create_section_card(
                 seg.text, seg.section_index, total_sections,
                 config, frame_path,
             )
             frames.append(VisualFrame(frame_path, config.pause_after_heading + 1.0, i))
 
-            # Check if we have a diagram for this section
-            if seg.text in SECTION_DIAGRAMS and seg.text not in seen_sections:
-                seen_sections.add(seg.text)
-                diagram_type, labels, diagram_title = SECTION_DIAGRAMS[seg.text]
-                diagram_path = os.path.join(output_dir, f"diagram_{i:04d}.png")
-                create_diagram_frame(diagram_type, labels, config, diagram_path,
-                                     title=diagram_title)
-                # Diagram duration will be set during audio alignment
-                frames.append(VisualFrame(diagram_path, 6.0, i))
-
         elif seg.segment_type == "blockquote":
             create_blockquote_frame(seg.text, seg.section_title, config, frame_path)
             frames.append(VisualFrame(frame_path, 0, i))  # duration set by audio
 
         else:  # paragraph
-            # Pick the first citation's QR code if available
-            qr_path = None
-            if seg.citations:
-                first_url = seg.citations[0].url
-                qr_path = qr_map.get(first_url)
-
+            # Text track is intentionally text-only.
             create_text_frame(seg.text, seg.section_title, config, frame_path,
-                              qr_image_path=qr_path)
+                              qr_image_path=None)
             frames.append(VisualFrame(frame_path, 0, i))  # duration set by audio
 
     return frames

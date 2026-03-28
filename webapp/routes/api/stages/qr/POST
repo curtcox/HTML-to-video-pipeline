@@ -17,11 +17,18 @@ if not os.path.exists(segments_path):
 
 try:
     with redirect_stdout_to_stderr():
+        from diagram_specs import resolved_specs_from_json
         from parse_article import segments_from_json, get_all_citation_urls
         from generate_qr import generate_all_qr_codes
 
         segments = segments_from_json(segments_path)
         citation_urls = get_all_citation_urls(segments)
+        diagram_specs_path = os.path.join(output_dir, "diagram_specs.json")
+        if os.path.exists(diagram_specs_path):
+            resolved_diagrams = resolved_specs_from_json(diagram_specs_path)
+            for diagram in resolved_diagrams:
+                if diagram.image_url not in citation_urls:
+                    citation_urls.append(diagram.image_url)
         qr_dir = os.path.join(output_dir, "qr_codes")
         os.makedirs(qr_dir, exist_ok=True)
 

@@ -23,7 +23,18 @@ removals = {
     "audio":    ("dir",  os.path.join(output_dir, "audio")),
     "captions": ("file", os.path.join(output_dir, "captions.srt")),
     "segments": ("file", os.path.join(output_dir, "segments.json")),
+    "diagram_specs": ("file", os.path.join(output_dir, "diagram_specs.json")),
+    "diagram_specs_text": ("file", os.path.join(output_dir, "diagram_specs.txt")),
+    "diagram_frames_meta": ("file", os.path.join(output_dir, "diagram_frames.json")),
+    "video_outputs_meta": ("file", os.path.join(output_dir, "video_outputs.json")),
     "video":    ("file", os.path.join(output_dir, "video.mp4")),
+    "video_text": ("file", os.path.join(output_dir, "video_text.mp4")),
+    "video_diagrams": ("file", os.path.join(output_dir, "video_diagrams.mp4")),
+    "video_combined": ("file", os.path.join(output_dir, "video_combined.mp4")),
+    "raw_video_text": ("file", os.path.join(output_dir, "raw_video_text.mp4")),
+    "raw_video_diagrams": ("file", os.path.join(output_dir, "raw_video_diagrams.mp4")),
+    "raw_video_combined": ("file", os.path.join(output_dir, "raw_video_combined.mp4")),
+    "diagram_blank": ("file", os.path.join(output_dir, "diagram_blank.png")),
 }
 
 for name, (kind, path) in removals.items():

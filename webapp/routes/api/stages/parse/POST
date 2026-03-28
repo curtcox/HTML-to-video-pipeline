@@ -16,8 +16,16 @@ except json.JSONDecodeError:
 
 url = params.get("url", "")
 segments_json_path = params.get("segments_json", "")
+diagram_specs_text = params.get("diagram_specs_text", params.get("diagram_specs", ""))
+diagram_specs_file = params.get("diagram_specs_file", "")
 
 try:
+    from diagram_specs import (
+        parse_diagram_specs_text,
+        load_diagram_specs_text,
+        resolve_diagram_specs,
+        resolved_specs_to_json,
+    )
     from parse_article import fetch_html, parse_article, segments_to_json, get_all_citation_urls, segments_from_json
 
     if segments_json_path:
@@ -36,11 +44,21 @@ try:
     with open(segments_path, "w") as f:
         f.write(segments_to_json(segments))
 
+    if diagram_specs_file:
+        diagram_specs_text = load_diagram_specs_text(diagram_specs_file)
+    diagram_specs = parse_diagram_specs_text(diagram_specs_text) if diagram_specs_text.strip() else []
+    resolved_diagrams = resolve_diagram_specs(diagram_specs, segments) if diagram_specs else []
+    with open(os.path.join(output_dir, "diagram_specs.txt"), "w", encoding="utf-8") as f:
+        f.write(diagram_specs_text or "")
+    with open(os.path.join(output_dir, "diagram_specs.json"), "w", encoding="utf-8") as f:
+        f.write(resolved_specs_to_json(resolved_diagrams))
+
     citations = get_all_citation_urls(segments)
     body = json.dumps({
         "status": "ok",
         "segment_count": len(segments),
         "citation_count": len(citations),
+        "diagram_count": len(resolved_diagrams),
     })
 except Exception as e:
     sys.stdout.write("Status: 500\n\n")

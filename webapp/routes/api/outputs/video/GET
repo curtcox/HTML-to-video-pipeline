@@ -3,19 +3,27 @@
 import json
 import os
 import sys
+from urllib.parse import parse_qs
 
 root = os.environ["PIPELINE_ROOT"]
-video_path = os.path.join(root, "output", "video.mp4")
+output_dir = os.path.join(root, "output")
+params = parse_qs(os.environ.get("QUERY_STRING", ""))
+query_name = os.environ.get("QUERY_NAME", "")
+name = (query_name or params.get("name", ["video.mp4"])[0] or "video.mp4").strip()
+safe_name = os.path.basename(name)
+video_path = os.path.join(output_dir, safe_name)
+if not safe_name.endswith(".mp4"):
+    video_path = os.path.join(output_dir, "video.mp4")
 
 if not os.path.isfile(video_path):
     sys.stdout.write("Status: 404\n\n")
-    sys.stdout.write(json.dumps({"error": "No video found. Run assemble stage first."}))
+    sys.stdout.write(json.dumps({"error": f"No video found at {safe_name}. Run assemble stage first."}))
     raise SystemExit(0)
 
 # Serve the raw MP4 binary with proper Content-Type
 data = open(video_path, "rb").read()
 sys.stdout.buffer.write(b"Content-Type: video/mp4\n")
 sys.stdout.buffer.write(f"Content-Length: {len(data)}\n".encode())
-sys.stdout.buffer.write(b"Content-Disposition: attachment; filename=video.mp4\n")
+sys.stdout.buffer.write(f"Content-Disposition: attachment; filename={safe_name}\n".encode())
 sys.stdout.buffer.write(b"\n")
 sys.stdout.buffer.write(data)
