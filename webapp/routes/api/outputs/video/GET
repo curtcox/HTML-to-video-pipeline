@@ -20,10 +20,86 @@ if not os.path.isfile(video_path):
     sys.stdout.write(json.dumps({"error": f"No video found at {safe_name}. Run assemble stage first."}))
     raise SystemExit(0)
 
-# Serve the raw MP4 binary with proper Content-Type
-data = open(video_path, "rb").read()
-sys.stdout.buffer.write(b"Content-Type: video/mp4\n")
-sys.stdout.buffer.write(f"Content-Length: {len(data)}\n".encode())
-sys.stdout.buffer.write(f"Content-Disposition: attachment; filename={safe_name}\n".encode())
-sys.stdout.buffer.write(b"\n")
-sys.stdout.buffer.write(data)
+file_size = os.path.getsize(video_path)
+range_header = (os.environ.get("HTTP_RANGE", "") or "").strip()
+
+
+def _write_headers(lines: list[str]) -> None:
+    header_blob = ("\n".join(lines) + "\n\n").encode("utf-8")
+    sys.stdout.buffer.write(header_blob)
+
+
+def _write_416(total_size: int) -> None:
+    payload = json.dumps({"error": "invalid_range"}).encode("utf-8")
+    _write_headers(
+        [
+            "Status: 416",
+            "Content-Type: application/json",
+            f"Content-Range: bytes */{total_size}",
+            f"Content-Length: {len(payload)}",
+        ]
+    )
+    sys.stdout.buffer.write(payload)
+
+
+if range_header and range_header.lower().startswith("bytes="):
+    byte_range = range_header.split("=", 1)[1].strip()
+    if "," in byte_range:
+        _write_416(file_size)
+        raise SystemExit(0)
+
+    start_str, end_str = (byte_range.split("-", 1) + [""])[:2]
+    try:
+        if start_str == "":
+            # Suffix range: bytes=-N
+            suffix_len = int(end_str)
+            if suffix_len <= 0:
+                raise ValueError("invalid suffix")
+            start = max(0, file_size - suffix_len)
+            end = file_size - 1
+        else:
+            start = int(start_str)
+            end = int(end_str) if end_str else file_size - 1
+        if start < 0 or end < start or start >= file_size:
+            raise ValueError("invalid bounds")
+        end = min(end, file_size - 1)
+    except Exception:
+        _write_416(file_size)
+        raise SystemExit(0)
+
+    length = end - start + 1
+    _write_headers(
+        [
+            "Status: 206",
+            "Content-Type: video/mp4",
+            "Accept-Ranges: bytes",
+            f"Content-Range: bytes {start}-{end}/{file_size}",
+            f"Content-Length: {length}",
+            f"Content-Disposition: inline; filename={safe_name}",
+        ]
+    )
+
+    with open(video_path, "rb") as f:
+        f.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = f.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            sys.stdout.buffer.write(chunk)
+            remaining -= len(chunk)
+else:
+    _write_headers(
+        [
+            "Content-Type: video/mp4",
+            "Accept-Ranges: bytes",
+            f"Content-Length: {file_size}",
+            f"Content-Disposition: inline; filename={safe_name}",
+        ]
+    )
+    with open(video_path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            sys.stdout.buffer.write(chunk)
