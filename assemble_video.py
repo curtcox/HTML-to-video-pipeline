@@ -214,7 +214,7 @@ def _render_frame_clip(
 ) -> float:
     """Render one image into a short clip with exact frame count.
 
-    When scroll_direction is set ("vertical" or "horizontal"), the image moves
+    When scroll_direction is set, the image moves
     linearly across the viewport for the full clip duration.
     """
     clip_duration = _frame_count_to_duration(frame_count, config.fps)
@@ -224,7 +224,7 @@ def _render_frame_clip(
         f"pad={config.video_width}:{config.video_height}:(ow-iw)/2:(oh-ih)/2"
     )
 
-    if scroll_direction in {"vertical", "horizontal"} and frame_count > 1:
+    if scroll_direction in {"vertical", "horizontal", "diag_tl_br", "diag_tr_bl"} and frame_count > 1:
         x_expr, y_expr = _scroll_overlay_position_expr(scroll_direction, frame_count)
         bg_hex = (scroll_background_hex or config.background_color).replace("#", "0x")
         filter_complex = (
@@ -279,6 +279,10 @@ def _scroll_overlay_position_expr(scroll_direction: str, frame_count: int) -> tu
         return "0", f"H-((H+h)*n/{denom})"
     if scroll_direction == "horizontal":
         return f"W-((W+w)*n/{denom})", "0"
+    if scroll_direction == "diag_tl_br":
+        return f"-w+((W+w)*n/{denom})", f"-h+((H+h)*n/{denom})"
+    if scroll_direction == "diag_tr_bl":
+        return f"W-((W+w)*n/{denom})", f"-h+((H+h)*n/{denom})"
     raise ValueError(f"Unsupported scroll direction: {scroll_direction}")
 
 
@@ -389,7 +393,7 @@ def _render_frame_sequence_video(
     scroll_background_hex: Optional[str] = None,
 ) -> float:
     """Render the visual timeline as concatenated hold and transition clips."""
-    if scroll_direction in {"vertical", "horizontal"}:
+    if scroll_direction in {"vertical", "horizontal", "diag_tl_br", "diag_tr_bl"}:
         use_transitions = False
 
     with tempfile.TemporaryDirectory(prefix="frame-clips-", dir=os.path.dirname(raw_video_path)) as tmpdir:
@@ -501,7 +505,8 @@ def build_diagram_frame_sequence(
         )
         if start_time is None or end_time is None:
             continue
-        start_time = max(0.0, start_time)
+        start_time = min(total_audio_duration, max(0.0, start_time))
+        end_time = min(total_audio_duration, end_time)
         if end_time < start_time:
             raise ValueError(
                 f"Diagram line {frame.line_number}: stop boundary resolves before start boundary."
@@ -734,6 +739,40 @@ def _render_overlay_video(
     subprocess.run(cmd, capture_output=True, check=True)
 
 
+def _render_overlay_stack(
+    base_video_path: str,
+    overlay_video_paths: Sequence[str],
+    output_path: str,
+    key_color_hex: str,
+    work_dir: str,
+) -> str:
+    """Overlay multiple key-colored tracks onto a base video, in order."""
+    current_base = base_video_path
+    temp_outputs: List[str] = []
+    try:
+        for idx, overlay_path in enumerate(overlay_video_paths):
+            if not overlay_path:
+                continue
+            if idx == len(overlay_video_paths) - 1:
+                next_output = output_path
+            else:
+                next_output = os.path.join(work_dir, f"overlay_stack_{idx:02d}.mp4")
+                temp_outputs.append(next_output)
+            _render_overlay_video(current_base, overlay_path, next_output, key_color_hex)
+            current_base = next_output
+        if current_base != output_path:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", current_base, "-c", "copy", output_path],
+                capture_output=True,
+                check=True,
+            )
+        return output_path
+    finally:
+        for temp_path in temp_outputs:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
 def assemble_video(
     visual_frames: List[VisualFrame],
     audio_segments: List[AudioSegment],
@@ -741,6 +780,8 @@ def assemble_video(
     config: PipelineConfig,
     output_dir: str,
     diagram_frames: Optional[Sequence[DiagramTrackFrame]] = None,
+    diagram_frames_diag1: Optional[Sequence[DiagramTrackFrame]] = None,
+    diagram_frames_diag2: Optional[Sequence[DiagramTrackFrame]] = None,
     video_modes: Optional[Sequence[str]] = None,
 ) -> tuple[str, SyncReport]:
     """
@@ -776,7 +817,7 @@ def assemble_video(
 
     print("Step 3: Rendering raw visual tracks...")
     requested_set = set(requested_modes)
-    has_diagram_frames = bool(diagram_frames)
+    has_diagram_frames = bool(diagram_frames or diagram_frames_diag1 or diagram_frames_diag2)
     need_text_raw = bool(requested_set & {"text", "combined"})
     need_diagram_raw = ("diagrams" in requested_set) or ("combined" in requested_set and has_diagram_frames)
     need_combined_overlay = ("combined" in requested_set) and has_diagram_frames
@@ -794,6 +835,9 @@ def assemble_video(
         )
         print(f"  Text track timeline: {clip_plan_duration:.1f}s")
 
+    raw_diagram_video_h = os.path.join(output_dir, "raw_video_diagrams_h.mp4")
+    raw_diagram_video_d1 = os.path.join(output_dir, "raw_video_diagrams_d1.mp4")
+    raw_diagram_video_d2 = os.path.join(output_dir, "raw_video_diagrams_d2.mp4")
     raw_diagram_video = os.path.join(output_dir, "raw_video_diagrams.mp4")
     if need_diagram_raw:
         blank_frame = os.path.join(output_dir, "diagram_blank.png")
@@ -803,24 +847,65 @@ def assemble_video(
             config.video_height,
             tuple(int(DIAGRAM_KEY_COLOR_HEX[i:i+2], 16) for i in (1, 3, 5)),
         )
-        diagram_sequence = build_diagram_frame_sequence(
+        diagram_sequence_h = build_diagram_frame_sequence(
             diagram_frames or [],
             segment_timings,
             total_audio_duration,
             blank_frame,
         )
+        diagram_sequence_d1 = build_diagram_frame_sequence(
+            diagram_frames_diag1 or [],
+            segment_timings,
+            total_audio_duration,
+            blank_frame,
+        )
+        diagram_sequence_d2 = build_diagram_frame_sequence(
+            diagram_frames_diag2 or [],
+            segment_timings,
+            total_audio_duration,
+            blank_frame,
+        )
         _render_frame_sequence_video(
-            diagram_sequence,
-            raw_diagram_video,
+            diagram_sequence_h,
+            raw_diagram_video_h,
             config,
             use_transitions=False,
             scroll_direction="horizontal",
             scroll_background_hex=DIAGRAM_KEY_COLOR_HEX,
         )
+        _render_frame_sequence_video(
+            diagram_sequence_d1,
+            raw_diagram_video_d1,
+            config,
+            use_transitions=False,
+            scroll_direction="diag_tl_br",
+            scroll_background_hex=DIAGRAM_KEY_COLOR_HEX,
+        )
+        _render_frame_sequence_video(
+            diagram_sequence_d2,
+            raw_diagram_video_d2,
+            config,
+            use_transitions=False,
+            scroll_direction="diag_tr_bl",
+            scroll_background_hex=DIAGRAM_KEY_COLOR_HEX,
+        )
+        _render_overlay_stack(
+            raw_diagram_video_h,
+            [raw_diagram_video_d1, raw_diagram_video_d2],
+            raw_diagram_video,
+            DIAGRAM_KEY_COLOR_HEX,
+            output_dir,
+        )
 
     raw_combined_video = os.path.join(output_dir, "raw_video_combined.mp4")
     if need_combined_overlay:
-        _render_overlay_video(raw_text_video, raw_diagram_video, raw_combined_video, DIAGRAM_KEY_COLOR_HEX)
+        _render_overlay_stack(
+            raw_text_video,
+            [raw_diagram_video_h, raw_diagram_video_d1, raw_diagram_video_d2],
+            raw_combined_video,
+            DIAGRAM_KEY_COLOR_HEX,
+            output_dir,
+        )
     elif "combined" in requested_set:
         raw_combined_video = raw_text_video
 

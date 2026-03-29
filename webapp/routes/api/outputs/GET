@@ -35,11 +35,17 @@ else:
 text_frames = list_dir(os.path.join(output_dir, "frames", "text"), [".png"])
 if not text_frames:
     text_frames = list_dir(os.path.join(output_dir, "frames"), [".png"])
+diagram_frames = (
+    list_dir(os.path.join(output_dir, "frames", "diagrams"), [".png"])
+    + list_dir(os.path.join(output_dir, "frames", "diagrams_diag1"), [".png"])
+    + list_dir(os.path.join(output_dir, "frames", "diagrams_diag2"), [".png"])
+)
+diagram_frames.sort(key=lambda item: item["name"])
 
 body = json.dumps({
     "segments": os.path.exists(os.path.join(output_dir, "segments.json")),
     "frames": text_frames,
-    "diagram_frames": list_dir(os.path.join(output_dir, "frames", "diagrams"), [".png"]),
+    "diagram_frames": diagram_frames,
     "qr_codes": list_dir(os.path.join(output_dir, "qr_codes"), [".png"]),
     "audio": list_dir(os.path.join(output_dir, "audio"), [".mp3", ".wav"]),
     "captions": os.path.exists(os.path.join(output_dir, "captions.srt")),

@@ -23,8 +23,14 @@ try:
 
         segments = segments_from_json(segments_path)
         citation_urls = get_all_citation_urls(segments)
-        diagram_specs_path = os.path.join(output_dir, "diagram_specs.json")
-        if os.path.exists(diagram_specs_path):
+        diagram_specs_paths = [
+            os.path.join(output_dir, "diagram_specs.json"),
+            os.path.join(output_dir, "diagram_specs_diag1.json"),
+            os.path.join(output_dir, "diagram_specs_diag2.json"),
+        ]
+        for diagram_specs_path in diagram_specs_paths:
+            if not os.path.exists(diagram_specs_path):
+                continue
             resolved_diagrams = resolved_specs_from_json(diagram_specs_path)
             for diagram in resolved_diagrams:
                 if diagram.image_url not in citation_urls:

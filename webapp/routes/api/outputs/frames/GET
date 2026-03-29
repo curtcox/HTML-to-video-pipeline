@@ -10,6 +10,8 @@ frames_root = os.path.join(root, "output", "frames")
 frame_dirs = [
     os.path.join(frames_root, "text"),
     os.path.join(frames_root, "diagrams"),
+    os.path.join(frames_root, "diagrams_diag1"),
+    os.path.join(frames_root, "diagrams_diag2"),
     frames_root,  # backward compatibility
 ]
 name = os.environ.get("QUERY_NAME", "")

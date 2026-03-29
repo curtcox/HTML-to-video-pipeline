@@ -28,9 +28,18 @@ try:
         frames_root = os.path.join(output_dir, "frames")
         text_frames_dir = os.path.join(frames_root, "text")
         diagram_frames_dir = os.path.join(frames_root, "diagrams")
+        diagram_diag1_frames_dir = os.path.join(frames_root, "diagrams_diag1")
+        diagram_diag2_frames_dir = os.path.join(frames_root, "diagrams_diag2")
         os.makedirs(text_frames_dir, exist_ok=True)
         os.makedirs(diagram_frames_dir, exist_ok=True)
-        for directory in (text_frames_dir, diagram_frames_dir):
+        os.makedirs(diagram_diag1_frames_dir, exist_ok=True)
+        os.makedirs(diagram_diag2_frames_dir, exist_ok=True)
+        for directory in (
+            text_frames_dir,
+            diagram_frames_dir,
+            diagram_diag1_frames_dir,
+            diagram_diag2_frames_dir,
+        ):
             for name in os.listdir(directory):
                 if name.endswith(".png"):
                     os.remove(os.path.join(directory, name))
@@ -48,17 +57,54 @@ try:
             resolved_diagrams = resolved_specs_from_json(diagram_specs_path)
         else:
             resolved_diagrams = []
+        diagram_specs_diag1_path = os.path.join(output_dir, "diagram_specs_diag1.json")
+        if os.path.exists(diagram_specs_diag1_path):
+            resolved_diagrams_diag1 = resolved_specs_from_json(diagram_specs_diag1_path)
+        else:
+            resolved_diagrams_diag1 = []
+        diagram_specs_diag2_path = os.path.join(output_dir, "diagram_specs_diag2.json")
+        if os.path.exists(diagram_specs_diag2_path):
+            resolved_diagrams_diag2 = resolved_specs_from_json(diagram_specs_diag2_path)
+        else:
+            resolved_diagrams_diag2 = []
 
         frames = generate_frames_for_segments(segments, qr_map, config, text_frames_dir)
-        diagram_frames = generate_diagram_track_frames(resolved_diagrams, qr_map, config, diagram_frames_dir)
+        diagram_frames = generate_diagram_track_frames(
+            resolved_diagrams,
+            qr_map,
+            config,
+            diagram_frames_dir,
+            frame_name_prefix="diagram_overlay_h",
+        )
+        diagram_frames_diag1 = generate_diagram_track_frames(
+            resolved_diagrams_diag1,
+            qr_map,
+            config,
+            diagram_diag1_frames_dir,
+            frame_name_prefix="diagram_overlay_d1",
+        )
+        diagram_frames_diag2 = generate_diagram_track_frames(
+            resolved_diagrams_diag2,
+            qr_map,
+            config,
+            diagram_diag2_frames_dir,
+            frame_name_prefix="diagram_overlay_d2",
+        )
         with open(os.path.join(output_dir, "frames.json"), "w") as f:
             json.dump([asdict(frame) for frame in frames], f, indent=2)
         with open(os.path.join(output_dir, "diagram_frames.json"), "w") as f:
             json.dump([asdict(frame) for frame in diagram_frames], f, indent=2)
+        with open(os.path.join(output_dir, "diagram_frames_diag1.json"), "w") as f:
+            json.dump([asdict(frame) for frame in diagram_frames_diag1], f, indent=2)
+        with open(os.path.join(output_dir, "diagram_frames_diag2.json"), "w") as f:
+            json.dump([asdict(frame) for frame in diagram_frames_diag2], f, indent=2)
     body = json.dumps({
         "status": "ok",
         "text_frame_count": len(frames),
-        "diagram_frame_count": len(diagram_frames),
+        "diagram_frame_count": len(diagram_frames) + len(diagram_frames_diag1) + len(diagram_frames_diag2),
+        "diagram_frame_count_horizontal": len(diagram_frames),
+        "diagram_frame_count_diagonal_1": len(diagram_frames_diag1),
+        "diagram_frame_count_diagonal_2": len(diagram_frames_diag2),
     })
 except Exception as e:
     import traceback

@@ -18,6 +18,10 @@ url = params.get("url", "")
 segments_json_path = params.get("segments_json", "")
 diagram_specs_text = params.get("diagram_specs_text", params.get("diagram_specs", ""))
 diagram_specs_file = params.get("diagram_specs_file", "")
+diagram_specs_diag1_text = params.get("diagram_specs_diag1_text", "")
+diagram_specs_diag1_file = params.get("diagram_specs_diag1_file", "")
+diagram_specs_diag2_text = params.get("diagram_specs_diag2_text", "")
+diagram_specs_diag2_file = params.get("diagram_specs_diag2_file", "")
 overlap_resolution = params.get("overlap_resolution", "manual")
 
 try:
@@ -48,39 +52,71 @@ try:
     with open(segments_path, "w") as f:
         f.write(segments_to_json(segments))
 
-    if diagram_specs_file:
-        diagram_specs_text = load_diagram_specs_text(diagram_specs_file)
-    diagram_specs = parse_diagram_specs_text(diagram_specs_text) if diagram_specs_text.strip() else []
-    resolved_diagrams = (
-        resolve_diagram_specs(diagram_specs, segments, allow_overlaps=True)
-        if diagram_specs else []
+    def resolve_track(track_name: str, raw_text: str, source_file: str):
+        text_value = raw_text
+        if source_file:
+            text_value = load_diagram_specs_text(source_file)
+        specs = parse_diagram_specs_text(text_value) if text_value.strip() else []
+        resolved = resolve_diagram_specs(specs, segments, allow_overlaps=True) if specs else []
+        overlaps = find_overlapping_resolved_diagrams(resolved)
+        adjustments = []
+        if overlaps:
+            if overlap_resolution == "auto_shrink":
+                resolved, adjustments, remaining_manual = auto_adjust_overlapping_resolved_diagrams(resolved)
+                if remaining_manual:
+                    raise ValueError(
+                        f"{track_name}: "
+                        + overlap_error_message(remaining_manual, manual_required_pairs=remaining_manual)
+                    )
+                overlaps = find_overlapping_resolved_diagrams(resolved)
+                if overlaps:
+                    raise ValueError(f"{track_name}: " + overlap_error_message(overlaps, manual_required_pairs=overlaps))
+            else:
+                raise ValueError(f"{track_name}: " + overlap_error_message(overlaps))
+        return text_value, resolved, adjustments
+
+    horizontal_text, resolved_diagrams, overlap_adjustments_h = resolve_track(
+        "horizontal diagrams",
+        diagram_specs_text,
+        diagram_specs_file,
     )
-    overlaps = find_overlapping_resolved_diagrams(resolved_diagrams)
-    overlap_adjustments = []
-    if overlaps:
-        if overlap_resolution == "auto_shrink":
-            resolved_diagrams, overlap_adjustments, remaining_manual = (
-                auto_adjust_overlapping_resolved_diagrams(resolved_diagrams)
-            )
-            if remaining_manual:
-                raise ValueError(overlap_error_message(remaining_manual, manual_required_pairs=remaining_manual))
-            overlaps = find_overlapping_resolved_diagrams(resolved_diagrams)
-            if overlaps:
-                raise ValueError(overlap_error_message(overlaps, manual_required_pairs=overlaps))
-        else:
-            raise ValueError(overlap_error_message(overlaps))
+    diag1_text, resolved_diagrams_diag1, overlap_adjustments_d1 = resolve_track(
+        "diagonal-1 diagrams",
+        diagram_specs_diag1_text,
+        diagram_specs_diag1_file,
+    )
+    diag2_text, resolved_diagrams_diag2, overlap_adjustments_d2 = resolve_track(
+        "diagonal-2 diagrams",
+        diagram_specs_diag2_text,
+        diagram_specs_diag2_file,
+    )
+
     with open(os.path.join(output_dir, "diagram_specs.txt"), "w", encoding="utf-8") as f:
-        f.write(diagram_specs_text or "")
+        f.write(horizontal_text or "")
+    with open(os.path.join(output_dir, "diagram_specs_diag1.txt"), "w", encoding="utf-8") as f:
+        f.write(diag1_text or "")
+    with open(os.path.join(output_dir, "diagram_specs_diag2.txt"), "w", encoding="utf-8") as f:
+        f.write(diag2_text or "")
+
     with open(os.path.join(output_dir, "diagram_specs.json"), "w", encoding="utf-8") as f:
         f.write(resolved_specs_to_json(resolved_diagrams))
+    with open(os.path.join(output_dir, "diagram_specs_diag1.json"), "w", encoding="utf-8") as f:
+        f.write(resolved_specs_to_json(resolved_diagrams_diag1))
+    with open(os.path.join(output_dir, "diagram_specs_diag2.json"), "w", encoding="utf-8") as f:
+        f.write(resolved_specs_to_json(resolved_diagrams_diag2))
 
     citations = get_all_citation_urls(segments)
+    total_diagrams = len(resolved_diagrams) + len(resolved_diagrams_diag1) + len(resolved_diagrams_diag2)
+    total_adjustments = len(overlap_adjustments_h) + len(overlap_adjustments_d1) + len(overlap_adjustments_d2)
     body = json.dumps({
         "status": "ok",
         "segment_count": len(segments),
         "citation_count": len(citations),
-        "diagram_count": len(resolved_diagrams),
-        "overlap_adjustment_count": len(overlap_adjustments),
+        "diagram_count": total_diagrams,
+        "diagram_count_horizontal": len(resolved_diagrams),
+        "diagram_count_diagonal_1": len(resolved_diagrams_diag1),
+        "diagram_count_diagonal_2": len(resolved_diagrams_diag2),
+        "overlap_adjustment_count": total_adjustments,
     })
 except Exception as e:
     sys.stdout.write("Status: 500\n\n")

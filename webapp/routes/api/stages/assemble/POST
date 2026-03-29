@@ -12,6 +12,8 @@ segments_path = os.path.join(output_dir, "segments.json")
 audio_meta_path = os.path.join(output_dir, "audio", "audio_metadata.json")
 frames_meta_path = os.path.join(output_dir, "frames.json")
 diagram_frames_meta_path = os.path.join(output_dir, "diagram_frames.json")
+diagram_frames_diag1_meta_path = os.path.join(output_dir, "diagram_frames_diag1.json")
+diagram_frames_diag2_meta_path = os.path.join(output_dir, "diagram_frames_diag2.json")
 srt_path = os.path.join(output_dir, "captions.srt")
 frames_dir = os.path.join(output_dir, "frames", "text")
 legacy_frames_dir = os.path.join(output_dir, "frames")
@@ -79,6 +81,18 @@ try:
             diagram_frames = [DiagramTrackFrame(**frame) for frame in diagram_frame_data]
         else:
             diagram_frames = []
+        if os.path.exists(diagram_frames_diag1_meta_path):
+            with open(diagram_frames_diag1_meta_path) as f:
+                diagram_frame_data_diag1 = json.load(f)
+            diagram_frames_diag1 = [DiagramTrackFrame(**frame) for frame in diagram_frame_data_diag1]
+        else:
+            diagram_frames_diag1 = []
+        if os.path.exists(diagram_frames_diag2_meta_path):
+            with open(diagram_frames_diag2_meta_path) as f:
+                diagram_frame_data_diag2 = json.load(f)
+            diagram_frames_diag2 = [DiagramTrackFrame(**frame) for frame in diagram_frame_data_diag2]
+        else:
+            diagram_frames_diag2 = []
 
         config = PipelineConfig(output_dir=output_dir)
         video_path, sync_report = assemble_video(
@@ -88,6 +102,8 @@ try:
             config,
             output_dir,
             diagram_frames=diagram_frames,
+            diagram_frames_diag1=diagram_frames_diag1,
+            diagram_frames_diag2=diagram_frames_diag2,
             video_modes=video_modes,
         )
         video_outputs_path = os.path.join(output_dir, "video_outputs.json")

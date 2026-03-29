@@ -20,6 +20,15 @@ class ScrollMotionTests(unittest.TestCase):
         self.assertEqual(x_expr, "0")
         self.assertEqual(y_expr, "H-((H+h)*n/1)")
 
+    def test_diagonal_scroll_expressions_are_linear(self):
+        x_expr, y_expr = _scroll_overlay_position_expr("diag_tl_br", 30)
+        self.assertEqual(x_expr, "-w+((W+w)*n/29)")
+        self.assertEqual(y_expr, "-h+((H+h)*n/29)")
+
+        x_expr, y_expr = _scroll_overlay_position_expr("diag_tr_bl", 30)
+        self.assertEqual(x_expr, "W-((W+w)*n/29)")
+        self.assertEqual(y_expr, "-h+((H+h)*n/29)")
+
     def test_no_transitions_when_disabled(self):
         config = PipelineConfig(fps=30)
         sequence = [

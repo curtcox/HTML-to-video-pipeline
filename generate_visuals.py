@@ -871,6 +871,7 @@ def generate_diagram_track_frames(
     qr_map: Dict[str, str],
     config: PipelineConfig,
     output_dir: str,
+    frame_name_prefix: str = "diagram_overlay",
 ) -> List[DiagramTrackFrame]:
     """Create keyed diagram frames mapped to segment index ranges."""
     os.makedirs(output_dir, exist_ok=True)
@@ -881,7 +882,7 @@ def generate_diagram_track_frames(
     for i, diagram in enumerate(resolved_diagrams):
         source_image_path = _download_diagram_source_image(diagram.image_url, source_dir, i)
         qr_path = qr_map.get(diagram.image_url)
-        frame_path = os.path.join(output_dir, f"diagram_overlay_{i:04d}.png")
+        frame_path = os.path.join(output_dir, f"{frame_name_prefix}_{i:04d}.png")
         create_diagram_overlay_frame(
             source_image_path=source_image_path,
             source_url=diagram.image_url,

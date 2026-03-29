@@ -107,8 +107,16 @@ HTML = r"""<!DOCTYPE html>
     <input type="text" id="url-input" placeholder="https://... or /path/to/article.html">
   </div>
   <div>
-    <label for="diagram-specs">Diagram Specs (one per line)</label>
+    <label for="diagram-specs">Horizontal Diagram Specs</label>
     <textarea id="diagram-specs" placeholder="https://example.com/pictures/cats.png >> Let's talk about cats >> but enough about cats for now.&#10;https://example.com/pictures/chart.png >> 00:45:25 >> 01:12:50"></textarea>
+  </div>
+  <div>
+    <label for="diagram-specs-diag1">Diagonal 1 Diagram Specs (TL->BR)</label>
+    <textarea id="diagram-specs-diag1" placeholder="https://example.com/pictures/diag1.png >> 00:10:00 >> 00:20:00"></textarea>
+  </div>
+  <div>
+    <label for="diagram-specs-diag2">Diagonal 2 Diagram Specs (TR->BL)</label>
+    <textarea id="diagram-specs-diag2" placeholder="https://example.com/pictures/diag2.png >> intro phrase >> outro phrase"></textarea>
   </div>
   <div>
     <label for="tts-provider">TTS Provider</label>
@@ -325,6 +333,8 @@ async function runStage(stage) {
     const url = document.getElementById('url-input').value;
     if (url) body.url = url;
     body.diagram_specs_text = document.getElementById('diagram-specs').value || '';
+    body.diagram_specs_diag1_text = document.getElementById('diagram-specs-diag1').value || '';
+    body.diagram_specs_diag2_text = document.getElementById('diagram-specs-diag2').value || '';
   }
   if (stage === 'audio') {
     body.dry_run = false;
