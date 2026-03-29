@@ -20,7 +20,7 @@ fi
 export PIPELINE_ROOT="$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 export ROUTE_DIR="$SCRIPT_DIR/routes"
-export COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-1800}"
+export COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-5400}"
 
 echo "Pipeline root: $PIPELINE_ROOT"
 echo "Route dir:     $ROUTE_DIR"

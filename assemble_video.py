@@ -21,6 +21,7 @@ from generate_visuals import VisualFrame, DiagramTrackFrame, DIAGRAM_KEY_COLOR_H
 TRANSITION_DURATION_SECONDS = 2.0
 TRANSITION_BORROW_SECONDS = 1.0
 MIN_STATIC_HOLD_SECONDS = 0.5
+INTERMEDIATE_X264_PRESET = "veryfast"
 
 
 @dataclass
@@ -246,7 +247,7 @@ def _render_frame_clip(
             "-frames:v", str(frame_count),
             "-r", str(config.fps),
             "-c:v", "libx264",
-            "-preset", "medium",
+            "-preset", INTERMEDIATE_X264_PRESET,
             "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-an",
@@ -261,7 +262,7 @@ def _render_frame_clip(
             "-r", str(config.fps),
             "-vf", scaled,
             "-c:v", "libx264",
-            "-preset", "medium",
+            "-preset", INTERMEDIATE_X264_PRESET,
             "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-an",
@@ -320,7 +321,7 @@ def _render_transition_clip(
         "-frames:v", str(frame_count),
         "-r", str(config.fps),
         "-c:v", "libx264",
-        "-preset", "medium",
+        "-preset", INTERMEDIATE_X264_PRESET,
         "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-an",
