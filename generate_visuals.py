@@ -12,11 +12,12 @@ import tempfile
 import time
 from io import BytesIO
 from typing import List, Dict, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from dataclasses import dataclass
+from bs4 import BeautifulSoup
 
 from config import PipelineConfig
 from diagram_specs import ResolvedDiagramSpec
@@ -527,6 +528,11 @@ def _download_diagram_source_image(
         if _is_svg_payload(local_bytes, "image/svg+xml", image_url):
             if _try_decode_svg_bytes(local_bytes, out_path, image_url, image_url):
                 return out_path
+        if _looks_like_html_payload(local_bytes, "text/html", image_url):
+            if _try_generate_thumbnail_from_webpage(image_url, local_bytes, out_path):
+                return out_path
+            _generate_url_text_fallback_image(image_url, out_path)
+            return out_path
         raise ValueError(f"Local image path is not decodable: {image_url!r}")
 
     request_url = _preferred_download_url(image_url)
@@ -560,6 +566,11 @@ def _download_diagram_source_image(
     if _is_svg_payload(resp.content, resp.headers.get("content-type", ""), resp.url):
         if _try_decode_svg_bytes(resp.content, out_path, image_url, resp.url):
             return out_path
+    if _looks_like_html_payload(resp.content, resp.headers.get("content-type", ""), resp.url):
+        if _try_generate_thumbnail_from_webpage(resp.url, resp.content, out_path):
+            return out_path
+        _generate_url_text_fallback_image(image_url, out_path)
+        return out_path
 
     # Fallback: curl often succeeds on hosts that gate Python HTTP clients.
     with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
@@ -588,6 +599,11 @@ def _download_diagram_source_image(
             if _is_svg_payload(curl_bytes, "image/svg+xml", image_url):
                 if _try_decode_svg_bytes(curl_bytes, out_path, image_url, image_url):
                     return out_path
+            if _looks_like_html_payload(curl_bytes, "text/html", image_url):
+                if _try_generate_thumbnail_from_webpage(image_url, curl_bytes, out_path):
+                    return out_path
+                _generate_url_text_fallback_image(image_url, out_path)
+                return out_path
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -603,6 +619,130 @@ def _download_diagram_source_image(
         f"url={image_url!r} request_url={request_url!r} final_url={resp.url!r} status={resp.status_code} "
         f"content_type={content_type!r}{svg_hint}"
     )
+
+
+def _looks_like_html_payload(raw: bytes, content_type: str, url: str) -> bool:
+    ctype = (content_type or "").lower()
+    if "text/html" in ctype:
+        return True
+    path = urlparse(url).path.lower()
+    if path.endswith(".html") or path.endswith(".htm"):
+        return True
+    head = raw.lstrip()[:256].lower()
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html")
+
+
+def _try_generate_thumbnail_from_webpage(page_url: str, raw_html: bytes, out_path: str) -> bool:
+    """
+    Try to derive a representative thumbnail image URL from a web page.
+    """
+    try:
+        html = raw_html.decode("utf-8", errors="ignore")
+    except Exception:
+        return False
+    if not html.strip():
+        return False
+
+    soup = BeautifulSoup(html, "html.parser")
+    candidate_urls: List[str] = []
+
+    def add_candidate(value: Optional[str]) -> None:
+        if not value:
+            return
+        absolute = urljoin(page_url, value.strip())
+        if absolute and absolute not in candidate_urls:
+            candidate_urls.append(absolute)
+
+    for selector in (
+        ("meta", {"property": "og:image"}, "content"),
+        ("meta", {"name": "twitter:image"}, "content"),
+        ("meta", {"name": "twitter:image:src"}, "content"),
+        ("meta", {"itemprop": "image"}, "content"),
+        ("link", {"rel": "image_src"}, "href"),
+    ):
+        tag_name, attrs, field = selector
+        tag = soup.find(tag_name, attrs=attrs)
+        if tag:
+            add_candidate(tag.get(field))
+
+    for img in soup.find_all("img", src=True):
+        add_candidate(img.get("src"))
+        if len(candidate_urls) >= 12:
+            break
+
+    for candidate in candidate_urls:
+        try:
+            if _try_download_remote_image(candidate, out_path, page_url):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _try_download_remote_image(image_url: str, out_path: str, referer_url: str = "") -> bool:
+    request_url = _preferred_download_url(image_url)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/png,image/jpeg,image/jpg,image/gif,image/webp,image/*,*/*;q=0.8",
+    }
+    if referer_url:
+        headers["Referer"] = referer_url
+    _throttle_wikimedia_request(request_url)
+    resp = _request_with_retries(request_url, headers=headers)
+    resp.raise_for_status()
+    if _try_decode_image_bytes(resp.content, out_path):
+        return True
+    if _is_svg_payload(resp.content, resp.headers.get("content-type", ""), resp.url):
+        return _try_decode_svg_bytes(resp.content, out_path, image_url, resp.url)
+    return False
+
+
+def _generate_url_text_fallback_image(url_text: str, out_path: str) -> str:
+    """
+    Render a simple fallback image containing the URL when no thumbnail is available.
+    """
+    width, height = 1920, 1080
+    background = (20, 26, 46)
+    panel = (34, 43, 71)
+    accent = (79, 195, 247)
+    text_color = (224, 224, 224)
+
+    img = Image.new("RGB", (width, height), background)
+    draw = ImageDraw.Draw(img)
+
+    margin = 80
+    draw.rounded_rectangle(
+        [(margin, margin), (width - margin, height - margin)],
+        radius=24,
+        fill=panel,
+        outline=accent,
+        width=3,
+    )
+
+    title_font = get_font(52, bold=True)
+    body_font = get_font(36, bold=False)
+
+    title = "Webpage Link (No Thumbnail)"
+    title_bbox = draw.textbbox((0, 0), title, font=title_font)
+    title_x = (width - (title_bbox[2] - title_bbox[0])) // 2
+    title_y = margin + 56
+    draw.text((title_x, title_y), title, fill=accent, font=title_font)
+
+    wrapped = textwrap.wrap(url_text, width=58) or [url_text]
+    y = title_y + 110
+    line_h = int(36 * 1.35)
+    for line in wrapped[:18]:
+        bbox = draw.textbbox((0, 0), line, font=body_font)
+        x = (width - (bbox[2] - bbox[0])) // 2
+        draw.text((x, y), line, fill=text_color, font=body_font)
+        y += line_h
+
+    img.save(out_path)
+    return out_path
 
 
 def _preferred_download_url(image_url: str) -> str:
